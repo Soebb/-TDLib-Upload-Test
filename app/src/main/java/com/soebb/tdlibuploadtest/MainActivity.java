@@ -83,8 +83,6 @@ public class MainActivity extends Activity {
                 p.systemLanguageCode="en"; p.deviceModel=android.os.Build.MODEL;
                 p.systemVersion=android.os.Build.VERSION.RELEASE; p.applicationVersion="1.0";
                 client.send(p,this::onResult);
-            } else if(s instanceof TdApi.AuthorizationStateWaitEncryptionKey) {
-                client.send(new TdApi.CheckDatabaseEncryptionKey(""),this::onResult);
             } else if(s instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
                 client.send(new TdApi.SetAuthenticationPhoneNumber(phone.getText().toString().trim(),null),this::onResult);
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
@@ -99,7 +97,7 @@ public class MainActivity extends Activity {
         } else if(object instanceof TdApi.UpdateFile) {
             TdApi.File f=((TdApi.UpdateFile)object).file;
             if(chosenFile!=null && f.local!=null && chosenFile.getAbsolutePath().equals(f.local.path) && f.remote!=null) {
-                int total=Math.max(1,f.size);
+                long total=Math.max(1L,f.size);
                 log("Upload progress: "+(100L*f.remote.uploadedSize/total)+"%");
             }
         } else if(object instanceof TdApi.UpdateMessageSendSucceeded) {
@@ -148,8 +146,11 @@ public class MainActivity extends Activity {
             if(o instanceof TdApi.Error) { log("Channel lookup failed: "+((TdApi.Error)o).message); return; }
             TdApi.Chat chat=(TdApi.Chat)o;
             log("Found channel: "+chat.title+" (ID "+chat.id+"). Starting upload...");
-            TdApi.InputMessageContent content=new TdApi.InputMessageDocument(
-                new TdApi.InputFileLocal(chosenFile.getAbsolutePath()),null,false,null);
+            TdApi.InputDocument document=new TdApi.InputDocument(
+                new TdApi.InputFileLocal(chosenFile.getAbsolutePath()),
+                chosenFile.getName(),
+                "application/octet-stream");
+            TdApi.InputMessageContent content=new TdApi.InputMessageDocument(document,null);
             client.send(new TdApi.SendMessage(chat.id,null,null,null,null,content),this::onResult);
         });
     }
