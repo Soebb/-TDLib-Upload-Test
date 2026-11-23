@@ -128,11 +128,25 @@ public class MainActivity extends Activity {
         }
     }
     private void onResult(TdApi.Object o) {
-        if(o instanceof TdApi.Error) log("Error "+((TdApi.Error)o).code+": "+((TdApi.Error)o).message);
-        else {
+        if(o instanceof TdApi.Error) {
+            log("Error "+((TdApi.Error)o).code+": "+((TdApi.Error)o).message);
+        } else if(o instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
+            log("Current authorization state: WaitPhoneNumber");
+            submitPhoneNumberIfNeeded();
+        } else if(o instanceof TdApi.AuthorizationStateWaitCode) {
+            log("Current authorization state: WaitCode. Check Telegram on your other logged-in devices.");
+        } else {
             log("TDLib response: "+o.getClass().getSimpleName());
-
         }
+    }
+    private void submitPhoneNumberIfNeeded() {
+        if(client==null || phoneSubmitted) return;
+        String number=phone.getText().toString().trim().replace(" ","").replace("-","");
+        if(number.startsWith("00")) number="+"+number.substring(2);
+        else if(!number.startsWith("+")) number="+"+number;
+        phoneSubmitted=true;
+        log("Submitting phone number to Telegram...");
+        client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
     }
     private void submitCode() {
         String c=code.getText().toString().trim();
