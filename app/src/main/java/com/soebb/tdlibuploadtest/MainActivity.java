@@ -148,6 +148,7 @@ public class MainActivity extends Activity {
             log("Found channel: "+chat.title+" (ID "+chat.id+"). Starting upload...");
             TdApi.InputDocument document=new TdApi.InputDocument(
                 new TdApi.InputFileLocal(chosenFile.getAbsolutePath()),
+                null,
                 chosenFile.getName(),
                 "application/octet-stream");
             TdApi.InputMessageContent content=new TdApi.InputMessageDocument(document,null);
