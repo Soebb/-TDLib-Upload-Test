@@ -149,8 +149,7 @@ public class MainActivity extends Activity {
             TdApi.InputDocument document=new TdApi.InputDocument(
                 new TdApi.InputFileLocal(chosenFile.getAbsolutePath()),
                 null,
-                chosenFile.getName(),
-                "application/octet-stream");
+                false);
             TdApi.InputMessageContent content=new TdApi.InputMessageDocument(document,null);
             client.send(new TdApi.SendMessage(chat.id,null,null,null,null,content),this::onResult);
         });
