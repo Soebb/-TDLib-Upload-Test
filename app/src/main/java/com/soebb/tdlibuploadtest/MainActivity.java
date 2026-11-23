@@ -2,6 +2,8 @@ package com.soebb.tdlibuploadtest;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.content.Intent;
 import android.net.Uri;
 import android.database.Cursor;
@@ -17,8 +19,12 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private EditText apiId, apiHash, phone, code, channel;
-    private TextView status, selected;
+    private TextView status, selected, codeInfoView;
+    private Button resendButton;
     private Client client;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private int resendSecondsRemaining = 0;
+    private Runnable resendCountdown;
     private File chosenFile;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private int pendingApiId;
@@ -43,6 +49,15 @@ public class MainActivity extends Activity {
         button(root,"Connect / Send login code",v -> startLogin());
         code = field(root,"Telegram login code");
         button(root,"Submit code",v -> submitCode());
+        codeInfoView = new TextView(this);
+        codeInfoView.setText("Code delivery information will appear here.");
+        codeInfoView.setPadding(0,12,0,8);
+        root.addView(codeInfoView);
+        resendButton = new Button(this);
+        resendButton.setText("No alternative code method available");
+        resendButton.setEnabled(false);
+        resendButton.setOnClickListener(v -> requestNextCodeMethod());
+        root.addView(resendButton);
         channel = field(root,"Public channel username (e.g. @mychannel)");
         button(root,"Choose file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
@@ -107,7 +122,9 @@ public class MainActivity extends Activity {
                     client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
                 }
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
-                log("Telegram sent a login code. Enter it below.");
+                TdApi.AuthenticationCodeInfo info = ((TdApi.AuthorizationStateWaitCode)s).codeInfo;
+                showCodeInfo(info);
+                log("TDLib is waiting for the login code. Check the delivery method shown above.");
             } else if(s instanceof TdApi.AuthorizationStateWaitPassword) {
                 log("This account has two-step verification enabled. This simplified build omits password entry, so sign-in cannot continue for this account.");
             } else if(s instanceof TdApi.AuthorizationStateReady) {
@@ -134,11 +151,87 @@ public class MainActivity extends Activity {
             log("Current authorization state: WaitPhoneNumber");
             submitPhoneNumberIfNeeded();
         } else if(o instanceof TdApi.AuthorizationStateWaitCode) {
-            log("Current authorization state: WaitCode. Check Telegram on your other logged-in devices.");
+            showCodeInfo(((TdApi.AuthorizationStateWaitCode)o).codeInfo);
+            log("Current authorization state: WaitCode.");
+        } else if(o instanceof TdApi.Ok && resendButton != null) {
+            log("TDLib accepted the request to resend/request the next code method. Waiting for updated delivery information...");
         } else {
             log("TDLib response: "+o.getClass().getSimpleName());
         }
     }
+
+    private String describeCodeType(TdApi.AuthenticationCodeType type) {
+        if(type == null) return "Not available";
+        String name = type.getClass().getSimpleName();
+        if(name.contains("TelegramMessage")) return "Telegram message (official Telegram chat on another active session)";
+        if(name.contains("SmsPhrase")) return "SMS phrase";
+        if(name.contains("SmsWord")) return "SMS word";
+        if(name.contains("Sms")) return "SMS";
+        if(name.contains("FlashCall")) return "Flash call (missed call)";
+        if(name.contains("MissedCall")) return "Missed call";
+        if(name.contains("Call")) return "Voice call";
+        if(name.contains("Fragment")) return "Fragment";
+        if(name.contains("Firebase")) return "Firebase / device verification";
+        return name;
+    }
+
+    private void showCodeInfo(TdApi.AuthenticationCodeInfo info) {
+        if(info == null) {
+            runOnUiThread(() -> codeInfoView.setText("TDLib did not provide code delivery details."));
+            return;
+        }
+        resendSecondsRemaining = Math.max(0, info.timeout);
+        String current = describeCodeType(info.type);
+        String next = describeCodeType(info.nextType);
+        runOnUiThread(() -> {
+            String details = "Phone: " + info.phoneNumber
+                + "\\nCurrent delivery method: " + current
+                + "\\nNext method: " + (info.nextType == null ? "Not offered by Telegram" : next)
+                + "\\nWait before next request: " + info.timeout + " seconds";
+            codeInfoView.setText(details);
+            updateResendButton();
+        });
+        startResendCountdown();
+    }
+
+    private void startResendCountdown() {
+        if(resendCountdown != null) mainHandler.removeCallbacks(resendCountdown);
+        resendCountdown = new Runnable() {
+            @Override public void run() {
+                updateResendButton();
+                if(resendSecondsRemaining > 0) {
+                    resendSecondsRemaining--;
+                    mainHandler.postDelayed(this, 1000);
+                }
+            }
+        };
+        mainHandler.post(resendCountdown);
+    }
+
+    private void updateResendButton() {
+        if(resendButton == null) return;
+        // The button is enabled only when Telegram explicitly offers a next method
+        // and its server-provided timeout has elapsed.
+        boolean hasNextMethod = codeInfoView != null
+            && codeInfoView.getText().toString().contains("Next method:")
+            && !codeInfoView.getText().toString().contains("Next method: Not offered");
+        resendButton.setEnabled(hasNextMethod && resendSecondsRemaining <= 0);
+        if(!hasNextMethod) resendButton.setText("Telegram did not offer another code method");
+        else if(resendSecondsRemaining > 0) resendButton.setText("Request next method in " + resendSecondsRemaining + "s");
+        else resendButton.setText("Request next code method");
+    }
+
+    private void requestNextCodeMethod() {
+        if(client == null || resendSecondsRemaining > 0) return;
+        if(!resendButton.isEnabled()) {
+            log("Telegram has not offered another code delivery method.");
+            return;
+        }
+        resendButton.setEnabled(false);
+        log("Requesting the next code delivery method from Telegram...");
+        client.send(new TdApi.ResendAuthenticationCode(), this::onResult);
+    }
+
     private void submitPhoneNumberIfNeeded() {
         if(client==null || phoneSubmitted) return;
         String number=phone.getText().toString().trim().replace(" ","").replace("-","");
