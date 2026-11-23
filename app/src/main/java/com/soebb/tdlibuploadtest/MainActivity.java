@@ -7,6 +7,7 @@ import android.net.Uri;
 import android.database.Cursor;
 import android.provider.OpenableColumns;
 import android.view.View;
+import android.view.Gravity;
 import android.widget.*;
 import org.drinkless.tdlib.Client;
 import org.drinkless.tdlib.TdApi;
@@ -49,7 +50,15 @@ public class MainActivity extends Activity {
         setContentView(scroll);
     }
     private EditText field(LinearLayout root,String hint) {
-        EditText e=new EditText(this); e.setSingleLine(true); e.setHint(hint); root.addView(e); return e;
+        EditText e=new EditText(this);
+        e.setSingleLine(true);
+        e.setHint(hint);
+        e.setTextDirection(View.TEXT_DIRECTION_LTR);
+        e.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        e.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        e.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        root.addView(e);
+        return e;
     }
     private void button(LinearLayout root,String text,View.OnClickListener click) {
         Button b=new Button(this); b.setText(text); b.setOnClickListener(click); root.addView(b);
@@ -82,7 +91,12 @@ public class MainActivity extends Activity {
                 p.useSecretChats=false; p.apiId=pendingApiId; p.apiHash=pendingApiHash;
                 p.systemLanguageCode="en"; p.deviceModel=android.os.Build.MODEL;
                 p.systemVersion=android.os.Build.VERSION.RELEASE; p.applicationVersion="1.0";
-                client.send(p,this::onResult);
+                client.send(p,o->{
+                    onResult(o);
+                    if(o instanceof TdApi.Ok) {
+                        client.send(new TdApi.GetAuthorizationState(),this::onResult);
+                    }
+                });
             } else if(s instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
                 client.send(new TdApi.SetAuthenticationPhoneNumber(phone.getText().toString().trim(),null),this::onResult);
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
@@ -108,7 +122,10 @@ public class MainActivity extends Activity {
     }
     private void onResult(TdApi.Object o) {
         if(o instanceof TdApi.Error) log("Error "+((TdApi.Error)o).code+": "+((TdApi.Error)o).message);
-        else log("TDLib response: "+o.getClass().getSimpleName());
+        else {
+            log("TDLib response: "+o.getClass().getSimpleName());
+
+        }
     }
     private void submitCode() {
         String c=code.getText().toString().trim();
