@@ -24,6 +24,7 @@ public class MainActivity extends Activity {
     private Client client;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int resendSecondsRemaining = 0;
+    private boolean hasNextCodeMethod = false;
     private Runnable resendCountdown;
     private File chosenFile;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -181,6 +182,7 @@ public class MainActivity extends Activity {
             return;
         }
         resendSecondsRemaining = Math.max(0, info.timeout);
+        hasNextCodeMethod = info.nextType != null;
         String current = describeCodeType(info.type);
         String next = describeCodeType(info.nextType);
         runOnUiThread(() -> {
@@ -212,11 +214,8 @@ public class MainActivity extends Activity {
         if(resendButton == null) return;
         // The button is enabled only when Telegram explicitly offers a next method
         // and its server-provided timeout has elapsed.
-        boolean hasNextMethod = codeInfoView != null
-            && codeInfoView.getText().toString().contains("Next method:")
-            && !codeInfoView.getText().toString().contains("Next method: Not offered");
-        resendButton.setEnabled(hasNextMethod && resendSecondsRemaining <= 0);
-        if(!hasNextMethod) resendButton.setText("Telegram did not offer another code method");
+        resendButton.setEnabled(hasNextCodeMethod && resendSecondsRemaining <= 0);
+        if(!hasNextCodeMethod) resendButton.setText("Telegram did not offer another code method");
         else if(resendSecondsRemaining > 0) resendButton.setText("Request next method in " + resendSecondsRemaining + "s");
         else resendButton.setText("Request next code method");
     }
