@@ -15,7 +15,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
-    private EditText apiId, apiHash, phone, code, password, channel;
+    private EditText apiId, apiHash, phone, code, channel;
     private TextView status, selected;
     private Client client;
     private File chosenFile;
@@ -41,8 +41,6 @@ public class MainActivity extends Activity {
         button(root,"Connect / Send login code",v -> startLogin());
         code = field(root,"Telegram login code");
         button(root,"Submit code",v -> submitCode());
-        password = field(root,"Two-step verification password (if requested)");
-        button(root,"Submit password",v -> submitPassword());
         channel = field(root,"Public channel username (e.g. @mychannel)");
         button(root,"Choose file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
@@ -92,7 +90,7 @@ public class MainActivity extends Activity {
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
                 log("Telegram sent a login code. Enter it below.");
             } else if(s instanceof TdApi.AuthorizationStateWaitPassword) {
-                log("Two-step verification password required.");
+                log("This account has two-step verification enabled. This simplified build omits password entry, so sign-in cannot continue for this account.");
             } else if(s instanceof TdApi.AuthorizationStateReady) {
                 log("CONNECTED: account authorized. You can upload.");
             } else if(s instanceof TdApi.AuthorizationStateLoggingOut) log("Logging out...");
@@ -117,10 +115,6 @@ public class MainActivity extends Activity {
     private void submitCode() {
         String c=code.getText().toString().trim();
         if(client!=null && !c.isEmpty()) client.send(new TdApi.CheckAuthenticationCode(c),this::onResult);
-    }
-    private void submitPassword() {
-        String p=password.getText().toString();
-        if(client!=null && !p.isEmpty()) client.send(new TdApi.CheckAuthenticationPassword(p),this::onResult);
     }
     private void chooseFile() {
         Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); i.addCategory(Intent.CATEGORY_OPENABLE);
