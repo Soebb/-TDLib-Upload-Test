@@ -23,6 +23,7 @@ public class MainActivity extends Activity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private int pendingApiId;
     private String pendingApiHash = "";
+    private boolean phoneSubmitted = false;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -98,7 +99,13 @@ public class MainActivity extends Activity {
                     }
                 });
             } else if(s instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
-                client.send(new TdApi.SetAuthenticationPhoneNumber(phone.getText().toString().trim(),null),this::onResult);
+                if(!phoneSubmitted) {
+                    String number=phone.getText().toString().trim().replace(" ","").replace("-","");
+                    if(!number.startsWith("+")) number="+"+number;
+                    phoneSubmitted=true;
+                    log("Submitting phone number to Telegram...");
+                    client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
+                }
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
                 log("Telegram sent a login code. Enter it below.");
             } else if(s instanceof TdApi.AuthorizationStateWaitPassword) {
