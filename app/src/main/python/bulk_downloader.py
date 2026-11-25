@@ -323,3 +323,24 @@ def download_post(url, download_root):
 def cleanup_post(url, download_root):
     key = hashlib.sha1(url.encode()).hexdigest()[:16]
     shutil.rmtree(Path(download_root) / key, ignore_errors=True)
+
+
+# JSON wrappers keep the Chaquopy bridge simple and version-independent.
+def initialize_json(database_path):
+    return json.dumps(initialize(database_path))
+
+
+def import_links_json(database_path, text):
+    return json.dumps(import_links(database_path, text))
+
+
+def counts_json(database_path):
+    return json.dumps(counts(database_path))
+
+
+def inspect_post_json(url):
+    return json.dumps(inspect_post(url), ensure_ascii=False)
+
+
+def chunk_plan_json(media_json, sent_chunks_json="{}"):
+    return json.dumps(chunk_plan(json.loads(media_json), sent_chunks_json), ensure_ascii=False)
