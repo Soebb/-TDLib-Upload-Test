@@ -19,6 +19,7 @@ import org.drinkless.tdlib.TdApi;
 import java.io.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.HashSet;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -55,6 +56,12 @@ public class MainActivity extends Activity {
     private JSONArray bulkCurrentMedia;
     private JSONArray bulkChunkPlan;
     private int bulkChunkIndex = 0;
+    private String bulkCaptionOverride = "";
+    private int bulkCurrentChunkNumber = -1;
+    private String bulkCurrentChunkSignature = "";
+    private boolean bulkChunkResponseReceived = false;
+    private final HashSet<Long> bulkAwaitingMessageIds = new HashSet<>();
+    private final HashSet<Long> bulkSucceededBeforeResponse = new HashSet<>();
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -675,6 +682,7 @@ public class MainActivity extends Activity {
         String username = channel.getText().toString().trim().replace("@", "");
         if (username.isEmpty()) { log("START BLOCKED: enter a public channel username."); return; }
         final String pastedLinks = linksInput.getText().toString();
+        bulkCaptionOverride = captionInput.getText().toString().trim();
         bulkUploadRunning = true;
         runOnUiThread(() -> {
             uploadButton.setEnabled(false);
@@ -727,8 +735,7 @@ public class MainActivity extends Activity {
                 bulkCurrentMedia = data.getJSONArray("media");
                 if (bulkCurrentFiles.length() == 0 || bulkCurrentFiles.length() != bulkCurrentMedia.length())
                     throw new IllegalStateException("Downloaded file list does not match extracted media metadata.");
-                String override = captionInput.getText().toString().trim();
-                bulkCurrentCaption = override.isEmpty() ? data.optString("caption", "") : override;
+                bulkCurrentCaption = bulkCaptionOverride.isEmpty() ? data.optString("caption", "") : bulkCaptionOverride;
                 bulkChunkPlan = new JSONArray(bulkEngine.planChunks(bulkCurrentMedia.toString(), bulkEngine.sentChunks(url)));
                 bulkChunkIndex = 0;
                 log("Downloaded " + bulkCurrentFiles.length() + " media item(s). Caption: " +
