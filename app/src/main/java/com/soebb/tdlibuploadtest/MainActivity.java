@@ -504,16 +504,21 @@ public class MainActivity extends Activity {
                 } finally {
                     try { metadata.release(); } catch (Exception ignored) {}
                 }
-                TdApi.InputMessageVideo video = new TdApi.InputMessageVideo();
-                video.video = new TdApi.InputFileLocal(chosenFile.getAbsolutePath());
-                video.thumbnail = null;
-                video.addedStickerFileIds = new int[0];
-                video.duration = duration;
-                video.width = width;
-                video.height = height;
-                video.supportsStreaming = true;
-                video.caption = null;
-                content = video;
+                TdApi.InputVideo inputVideo = new TdApi.InputVideo();
+                inputVideo.video = new TdApi.InputFileLocal(chosenFile.getAbsolutePath());
+                inputVideo.thumbnail = null;
+                inputVideo.cover = null;
+                inputVideo.startTimestamp = 0;
+                inputVideo.addedStickerFileIds = new int[0];
+                inputVideo.duration = duration;
+                inputVideo.width = width;
+                inputVideo.height = height;
+                inputVideo.supportsStreaming = true;
+
+                TdApi.InputMessageVideo videoMessage = new TdApi.InputMessageVideo();
+                videoMessage.video = inputVideo;
+                videoMessage.caption = null;
+                content = videoMessage;
                 log("Sending as Telegram video (" + duration + "s, " + width + "x" + height + ").");
             } else {
                 TdApi.InputDocument document = new TdApi.InputDocument(
