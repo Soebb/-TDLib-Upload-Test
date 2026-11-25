@@ -11,6 +11,9 @@ import android.provider.OpenableColumns;
 import android.view.View;
 import android.view.Gravity;
 import android.widget.*;
+import android.content.SharedPreferences;
+import android.text.TextWatcher;
+import android.text.Editable;
 import org.drinkless.tdlib.Client;
 import org.drinkless.tdlib.TdApi;
 import java.io.*;
@@ -19,7 +22,7 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private EditText apiId, apiHash, phone, code, channel;
-    private TextView status, selected, codeInfoView;
+    private TextView status, selected, codeInfoView, accountState;
     private Button resendButton;
     private Client client;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -31,11 +34,21 @@ public class MainActivity extends Activity {
     private int pendingApiId;
     private String pendingApiHash = "";
     private boolean phoneSubmitted = false;
+    private boolean loginRequested = false;
+    private SharedPreferences preferences;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         buildUi();
-        log("Ready. Get API ID and API Hash from https://my.telegram.org.");
+        preferences = getSharedPreferences("tdlib_upload_test", MODE_PRIVATE);
+        restoreForm();
+        attachFormPersistence();
+        setAccountState("Checking saved session...");
+        if (hasSavedCredentials()) startTdlib(false);
+        else {
+            setAccountState("Not signed in");
+            log("Enter your Telegram API credentials to get started.");
+        }
     }
 
     private void buildUi() {
@@ -43,7 +56,12 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this); root.setOrientation(1); root.setPadding(24,24,24,24);
         scroll.addView(root);
         TextView title = new TextView(this); title.setText("TDLib Upload Test"); title.setTextSize(24); root.addView(title);
-        TextView note = new TextView(this); note.setText("Personal account • Official TDLib • Direct MTProto test"); root.addView(note);
+        TextView note = new TextView(this); note.setText("Personal account • Official TDLib"); root.addView(note);
+        accountState = new TextView(this);
+        accountState.setText("Not signed in");
+        accountState.setTextSize(16);
+        accountState.setPadding(0,16,0,16);
+        root.addView(accountState);
         apiId = field(root,"API ID (from my.telegram.org)");
         apiHash = field(root,"API Hash");
         phone = field(root,"Phone number (international format)");
@@ -80,21 +98,81 @@ public class MainActivity extends Activity {
     private void button(LinearLayout root,String text,View.OnClickListener click) {
         Button b=new Button(this); b.setText(text); b.setOnClickListener(click); root.addView(b);
     }
-    private void log(String s) { runOnUiThread(() -> status.append("\n"+s)); }
+    private void log(String message) {
+        runOnUiThread(() -> status.setText(message));
+    }
 
-    private void startLogin() {
+    private void setAccountState(String state) {
+        runOnUiThread(() -> accountState.setText("Account: " + state));
+    }
+
+    private boolean hasSavedCredentials() {
+        return !apiId.getText().toString().trim().isEmpty()
+            && !apiHash.getText().toString().trim().isEmpty();
+    }
+
+    private void restoreForm() {
+        apiId.setText(preferences.getString("api_id", ""));
+        apiHash.setText(preferences.getString("api_hash", ""));
+        phone.setText(preferences.getString("phone", ""));
+        code.setText(preferences.getString("code", ""));
+        channel.setText(preferences.getString("channel", ""));
+    }
+
+    private void attachFormPersistence() {
+        TextWatcher watcher = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { saveForm(); }
+            @Override public void afterTextChanged(Editable s) {}
+        };
+        apiId.addTextChangedListener(watcher);
+        apiHash.addTextChangedListener(watcher);
+        phone.addTextChangedListener(watcher);
+        code.addTextChangedListener(watcher);
+        channel.addTextChangedListener(watcher);
+    }
+
+    private void saveForm() {
+        if (preferences == null || apiId == null) return;
+        preferences.edit()
+            .putString("api_id", apiId.getText().toString())
+            .putString("api_hash", apiHash.getText().toString())
+            .putString("phone", phone.getText().toString())
+            .putString("code", code.getText().toString())
+            .putString("channel", channel.getText().toString())
+            .apply();
+    }
+
+    private void startLogin() { startTdlib(true); }
+
+    private void startTdlib(boolean requestLogin) {
         try {
-            pendingApiId=Integer.parseInt(apiId.getText().toString().trim());
-            pendingApiHash=apiHash.getText().toString().trim();
-            String number=phone.getText().toString().trim();
-            if(pendingApiId<=0 || pendingApiHash.isEmpty() || number.isEmpty()) {
-                log("Fill API ID, API Hash and phone number first."); return;
+            pendingApiId = Integer.parseInt(apiId.getText().toString().trim());
+            pendingApiHash = apiHash.getText().toString().trim();
+            if (pendingApiId <= 0 || pendingApiHash.isEmpty()) {
+                log("Enter API ID and API Hash first.");
+                setAccountState("Not signed in");
+                return;
             }
-            if(client!=null) { log("TDLib client already started."); return; }
-            log("Starting TDLib...");
-            Client.setLogMessageHandler(4,(level,message)->log("TDLib log [level "+level+"]: "+message));
-            client=Client.create(this::onUpdate,null,null);
-        } catch(Throwable e) { log("TDLib initialization failed: "+e); }
+            if (requestLogin && phone.getText().toString().trim().isEmpty()) {
+                log("Enter your phone number first.");
+                return;
+            }
+            if (client != null) {
+                if (requestLogin) {
+                    loginRequested = true;
+                    submitPhoneNumberIfNeeded();
+                }
+                return;
+            }
+            loginRequested = requestLogin;
+            phoneSubmitted = false;
+            log(requestLogin ? "Connecting to Telegram..." : "Restoring saved Telegram session...");
+            client = Client.create(this::onUpdate, null, null);
+        } catch (Throwable e) {
+            log("TDLib initialization failed: " + e.getMessage());
+            setAccountState("Connection failed");
+        }
     }
 
     private void onUpdate(TdApi.Object object) {
@@ -115,24 +193,35 @@ public class MainActivity extends Activity {
                     }
                 });
             } else if(s instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
-                if(!phoneSubmitted) {
+                setAccountState("Not signed in");
+                if(loginRequested && !phoneSubmitted) {
                     String number=normalizePhoneNumber(phone.getText().toString());
                     phoneSubmitted=true;
-                    log("Submitting phone number to Telegram...");
+                    log("Requesting login code...");
                     client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
                 }
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
                 TdApi.AuthenticationCodeInfo info = ((TdApi.AuthorizationStateWaitCode)s).codeInfo;
                 showCodeInfo(info);
-                log("TDLib is waiting for the login code. Check the delivery method shown above.");
+                setAccountState("Waiting for login code");
+                log("Enter the code sent by Telegram.");
             } else if(s instanceof TdApi.AuthorizationStateWaitPassword) {
-                log("This account has two-step verification enabled. This simplified build omits password entry, so sign-in cannot continue for this account.");
+                setAccountState("Password required");
+                log("This build does not yet include two-step password entry.");
             } else if(s instanceof TdApi.AuthorizationStateReady) {
-                log("CONNECTED: account authorized. You can upload.");
-            } else if(s instanceof TdApi.AuthorizationStateLoggingOut) log("Logging out...");
-            else if(s instanceof TdApi.AuthorizationStateClosing) log("Closing...");
-            else if(s instanceof TdApi.AuthorizationStateClosed) log("TDLib closed.");
-            else log("UNHANDLED AUTHORIZATION STATE: "+s.getClass().getSimpleName()+" | "+s.toString());
+                loginRequested = false;
+                phoneSubmitted = true;
+                setAccountState("Signed in");
+                log("Connected. Ready to upload.");
+            } else if(s instanceof TdApi.AuthorizationStateLoggingOut) {
+                setAccountState("Signing out...");
+            } else if(s instanceof TdApi.AuthorizationStateClosing) {
+                setAccountState("Closing session...");
+            } else if(s instanceof TdApi.AuthorizationStateClosed) {
+                setAccountState("Session closed");
+            } else {
+                setAccountState(s.getClass().getSimpleName());
+            }
         } else if(object instanceof TdApi.UpdateFile) {
             TdApi.File f=((TdApi.UpdateFile)object).file;
             if(chosenFile!=null && f.local!=null && chosenFile.getAbsolutePath().equals(f.local.path) && f.remote!=null) {
@@ -148,17 +237,16 @@ public class MainActivity extends Activity {
     private void onResult(TdApi.Object o) {
         if(o instanceof TdApi.Error) {
             phoneSubmitted=false;
-            log("TDLIB REQUEST ERROR "+((TdApi.Error)o).code+": "+((TdApi.Error)o).message);
+            loginRequested=false;
+            log("Telegram error: "+((TdApi.Error)o).message);
         } else if(o instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
-            log("Current authorization state: WaitPhoneNumber");
-            submitPhoneNumberIfNeeded();
+            setAccountState("Not signed in");
+            if(loginRequested) submitPhoneNumberIfNeeded();
         } else if(o instanceof TdApi.AuthorizationStateWaitCode) {
             showCodeInfo(((TdApi.AuthorizationStateWaitCode)o).codeInfo);
-            log("Current authorization state: WaitCode.");
+            setAccountState("Waiting for login code");
         } else if(o instanceof TdApi.Ok && resendButton != null) {
-            log("TDLib accepted the request to resend/request the next code method. Waiting for updated delivery information...");
-        } else {
-            log("TDLib response: "+o.getClass().getSimpleName());
+            log("Request accepted. Waiting for Telegram...");
         }
     }
 
@@ -228,7 +316,7 @@ public class MainActivity extends Activity {
             return;
         }
         resendButton.setEnabled(false);
-        log("Requesting the next code delivery method from Telegram...");
+        log("Requesting another login code...");
         client.send(new TdApi.ResendAuthenticationCode(), this::onResult);
     }
 
@@ -243,7 +331,7 @@ public class MainActivity extends Activity {
         if(client==null || phoneSubmitted) return;
         String number=normalizePhoneNumber(phone.getText().toString());
         phoneSubmitted=true;
-        log("Submitting phone number to Telegram...");
+        log("Requesting login code...");
         client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
     }
     private void submitCode() {
@@ -290,5 +378,15 @@ public class MainActivity extends Activity {
             client.send(new TdApi.SendMessage(chat.id,null,null,null,null,content),this::onResult);
         });
     }
-    @Override protected void onDestroy() { super.onDestroy(); io.shutdown(); }
+    @Override protected void onPause() {
+        saveForm();
+        super.onPause();
+    }
+
+    @Override protected void onDestroy() {
+        if (resendCountdown != null) mainHandler.removeCallbacks(resendCountdown);
+        saveForm();
+        super.onDestroy();
+        io.shutdown();
+    }
 }
