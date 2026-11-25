@@ -216,7 +216,7 @@ public class MainActivity extends Activity {
                 setAccountState("Signed in");
                 codeInfoView.setVisibility(View.GONE);
                 resendButton.setVisibility(View.GONE);
-                log("Connected. Ready to upload.");
+                log("Signed in. Ready to upload.");
             } else if(s instanceof TdApi.AuthorizationStateLoggingOut) {
                 setAccountState("Signing out...");
             } else if(s instanceof TdApi.AuthorizationStateClosing) {
