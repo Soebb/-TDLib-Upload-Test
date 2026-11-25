@@ -132,6 +132,7 @@ public class MainActivity extends Activity {
             } else if(s instanceof TdApi.AuthorizationStateLoggingOut) log("Logging out...");
             else if(s instanceof TdApi.AuthorizationStateClosing) log("Closing...");
             else if(s instanceof TdApi.AuthorizationStateClosed) log("TDLib closed.");
+            else log("UNHANDLED AUTHORIZATION STATE: "+s.getClass().getSimpleName()+" | "+s.toString());
         } else if(object instanceof TdApi.UpdateFile) {
             TdApi.File f=((TdApi.UpdateFile)object).file;
             if(chosenFile!=null && f.local!=null && chosenFile.getAbsolutePath().equals(f.local.path) && f.remote!=null) {
@@ -187,9 +188,9 @@ public class MainActivity extends Activity {
         String next = describeCodeType(info.nextType);
         runOnUiThread(() -> {
             String details = "Phone: " + info.phoneNumber
-                + "\\nCurrent delivery method: " + current
-                + "\\nNext method: " + (info.nextType == null ? "Not offered by Telegram" : next)
-                + "\\nWait before next request: " + info.timeout + " seconds";
+                + "\nCurrent delivery method: " + current
+                + "\nNext method: " + (info.nextType == null ? "Not offered by Telegram" : next)
+                + "\nWait before next request: " + info.timeout + " seconds";
             codeInfoView.setText(details);
             updateResendButton();
         });
