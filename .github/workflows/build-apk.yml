@@ -59,13 +59,6 @@ jobs:
           cp -R tdlib-dist/jniLibs/. app/src/main/jniLibs/
           cp -R tdlib-dist/java/org/drinkless/tdlib/. app/src/main/java/org/drinkless/tdlib/
 
-      - name: Inspect generated TDLib photo input API
-        shell: bash
-        run: |
-          set -euo pipefail
-          grep -n -A45 -B3 "class InputPhoto" app/src/main/java/org/drinkless/tdlib/TdApi.java | head -180
-          grep -n -A45 -B3 "class InputMessagePhoto" app/src/main/java/org/drinkless/tdlib/TdApi.java | head -100
-
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
 
