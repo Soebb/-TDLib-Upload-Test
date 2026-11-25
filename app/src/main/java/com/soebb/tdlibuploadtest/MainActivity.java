@@ -668,6 +668,185 @@ public class MainActivity extends Activity {
         });
     }
 
+
+    private void startBulkUpload() {
+        if (bulkUploadRunning || uploadInProgress) { log("An upload is already in progress."); return; }
+        if (client == null || !isSignedIn) { log("START BLOCKED: sign in to Telegram first."); return; }
+        String username = channel.getText().toString().trim().replace("@", "");
+        if (username.isEmpty()) { log("START BLOCKED: enter a public channel username."); return; }
+        final String pastedLinks = linksInput.getText().toString();
+        bulkUploadRunning = true;
+        runOnUiThread(() -> {
+            uploadButton.setEnabled(false);
+            uploadProgress.setVisibility(View.VISIBLE);
+            uploadProgress.setIndeterminate(true);
+            uploadProgressText.setText("Preparing link queue...");
+        });
+        io.execute(() -> {
+            try {
+                if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
+                JSONObject imported = new JSONObject(bulkEngine.importLinks(pastedLinks));
+                int received = imported.optInt("received", 0);
+                if (received == 0) { finishBulkUpload("No Instagram links found in the text box or imported links file."); return; }
+                log("Found " + received + " Instagram link(s); " + imported.optInt("inserted", 0) + " new link(s) added to SQLite.");
+                String counts = bulkEngine.counts();
+                runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
+                client.send(new TdApi.SearchPublicChat(username), response -> {
+                    if (response instanceof TdApi.Error) { finishBulkUpload("Channel lookup failed: " + ((TdApi.Error) response).message); return; }
+                    if (!(response instanceof TdApi.Chat)) { finishBulkUpload("Unexpected response while resolving the channel."); return; }
+                    TdApi.Chat chat = (TdApi.Chat) response;
+                    bulkChatId = chat.id;
+                    log("Bulk destination: " + chat.title + " (ID " + chat.id + ").");
+                    loadNextBulkPost();
+                });
+            } catch (Throwable error) { finishBulkUpload("Could not initialize the bulk queue: " + error.getMessage()); }
+        });
+    }
+
+    private void loadNextBulkPost() {
+        io.execute(() -> {
+            try {
+                String url = bulkEngine.nextPending();
+                if (url == null) {
+                    String counts = bulkEngine.counts();
+                    runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
+                    finishBulkUpload("Bulk queue completed. " + counts);
+                    return;
+                }
+                bulkCurrentUrl = url;
+                bulkEngine.markProcessing(url);
+                log("Processing Instagram post: " + url);
+                JSONObject data = new JSONObject(bulkEngine.downloadPost(url));
+                bulkCurrentFiles = data.getJSONArray("files");
+                bulkCurrentMedia = data.getJSONArray("media");
+                if (bulkCurrentFiles.length() == 0 || bulkCurrentFiles.length() != bulkCurrentMedia.length())
+                    throw new IllegalStateException("Downloaded file list does not match extracted media metadata.");
+                String override = captionInput.getText().toString().trim();
+                bulkCurrentCaption = override.isEmpty() ? data.optString("caption", "") : override;
+                bulkChunkPlan = new JSONArray(bulkEngine.planChunks(bulkCurrentMedia.toString(), bulkEngine.sentChunks(url)));
+                bulkChunkIndex = 0;
+                log("Downloaded " + bulkCurrentFiles.length() + " media item(s). Caption: " +
+                    (bulkCurrentCaption.isEmpty() ? "none" : "extracted/custom") + ".");
+                sendNextBulkChunk();
+            } catch (Throwable error) { failCurrentBulkPost("Download/extraction failed: " + error.getMessage()); }
+        });
+    }
+
+    private void sendNextBulkChunk() {
+        if (!bulkUploadRunning) return;
+        if (bulkChunkIndex >= bulkChunkPlan.length()) {
+            final String completedUrl = bulkCurrentUrl;
+            io.execute(() -> {
+                try {
+                    bulkEngine.markDone(completedUrl);
+                    bulkEngine.cleanup(completedUrl);
+                    log("Post uploaded successfully: " + completedUrl);
+                    String counts = bulkEngine.counts();
+                    runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
+                    loadNextBulkPost();
+                } catch (Throwable error) { failCurrentBulkPost("Could not finalize post: " + error.getMessage()); }
+            });
+            return;
+        }
+        try {
+            JSONObject chunk = bulkChunkPlan.getJSONObject(bulkChunkIndex);
+            int chunkNumber = chunk.getInt("number");
+            String signature = chunk.getString("signature");
+            JSONArray items = chunk.getJSONArray("media");
+            TdApi.InputMessageContent[] contents = new TdApi.InputMessageContent[items.length()];
+            long totalBytes = 0;
+            for (int i = 0; i < items.length(); i++) {
+                int fileIndex = chunkNumber * 10 + i;
+                if (fileIndex >= bulkCurrentFiles.length()) throw new IllegalStateException("Chunk references a missing downloaded file.");
+                File mediaFile = new File(bulkCurrentFiles.getString(fileIndex));
+                if (!mediaFile.isFile()) throw new FileNotFoundException(mediaFile.getAbsolutePath());
+                totalBytes += mediaFile.length();
+                String caption = (chunkNumber == 0 && i == 0) ? bulkCurrentCaption : "";
+                contents[i] = buildBulkContent(mediaFile, items.getJSONObject(i), caption);
+            }
+            uploadTotalBytes = Math.max(1L, totalBytes);
+            uploadFileId = 0;
+            lastLoggedProgressStep = -1;
+            runOnUiThread(() -> {
+                uploadProgress.setIndeterminate(true);
+                uploadProgress.setProgress(0);
+                uploadProgressText.setText("Uploading post media " + (bulkChunkIndex + 1) + "/" + bulkChunkPlan.length() + "...");
+            });
+            log("Sending media batch " + (chunkNumber + 1) + " (" + contents.length + " item(s)) via TDLib.");
+            TdApi.Function<?> request = contents.length == 1
+                ? new TdApi.SendMessage(bulkChatId, null, null, null, null, contents[0])
+                : new TdApi.SendMessageAlbum(bulkChatId, null, null, null, contents);
+            client.send(request, response -> {
+                if (response instanceof TdApi.Error) { failCurrentBulkPost("TDLib rejected media batch: " + ((TdApi.Error) response).message); return; }
+                io.execute(() -> {
+                    try {
+                        bulkEngine.markChunkSent(bulkCurrentUrl, chunkNumber, signature);
+                        bulkChunkIndex++;
+                        sendNextBulkChunk();
+                    } catch (Throwable error) { failCurrentBulkPost("Could not save sent batch state: " + error.getMessage()); }
+                });
+            });
+        } catch (Throwable error) { failCurrentBulkPost("Could not prepare media batch: " + error.getMessage()); }
+    }
+
+    private TdApi.InputMessageContent buildBulkContent(File file, JSONObject meta, String captionText) throws Exception {
+        TdApi.FormattedText caption = captionText == null || captionText.isEmpty()
+            ? null : new TdApi.FormattedText(captionText, new TdApi.TextEntity[0]);
+        int width = meta.optInt("width", 0);
+        int height = meta.optInt("height", 0);
+        if (meta.optBoolean("is_video", false) || isVideoFile(file.getName())) {
+            TdApi.InputVideo video = new TdApi.InputVideo();
+            video.video = new TdApi.InputFileLocal(file.getAbsolutePath());
+            video.thumbnail = null;
+            video.cover = null;
+            video.startTimestamp = 0;
+            video.addedStickerFileIds = new int[0];
+            video.duration = meta.optInt("duration", 0);
+            video.width = width;
+            video.height = height;
+            video.supportsStreaming = true;
+            TdApi.InputMessageVideo message = new TdApi.InputMessageVideo();
+            message.video = video;
+            message.caption = caption;
+            return message;
+        }
+        String lower = file.getName().toLowerCase(java.util.Locale.US);
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
+            lower.endsWith(".webp") || lower.endsWith(".heic")) {
+            TdApi.InputMessagePhoto message = new TdApi.InputMessagePhoto();
+            message.photo = new TdApi.InputFileLocal(file.getAbsolutePath());
+            message.thumbnail = null;
+            message.addedStickerFileIds = new int[0];
+            message.width = width;
+            message.height = height;
+            message.caption = caption;
+            message.ttl = 0;
+            return message;
+        }
+        TdApi.InputDocument document = new TdApi.InputDocument(new TdApi.InputFileLocal(file.getAbsolutePath()), null, false);
+        return new TdApi.InputMessageDocument(document, caption);
+    }
+
+    private void failCurrentBulkPost(String reason) {
+        final String failedUrl = bulkCurrentUrl;
+        io.execute(() -> {
+            try { if (failedUrl != null && !failedUrl.isEmpty()) bulkEngine.markFailed(failedUrl, reason); }
+            catch (Throwable ignored) {}
+            log(reason + (failedUrl == null || failedUrl.isEmpty() ? "" : " URL: " + failedUrl));
+            loadNextBulkPost();
+        });
+    }
+
+    private void finishBulkUpload(String message) {
+        bulkUploadRunning = false;
+        runOnUiThread(() -> {
+            uploadButton.setEnabled(true);
+            uploadProgress.setIndeterminate(false);
+            uploadProgressText.setText(message);
+        });
+        log(message);
+    }
+
     private boolean isVideoFile(String name) {
         String lower = name == null ? "" : name.toLowerCase(java.util.Locale.US);
         return lower.endsWith(".mp4") || lower.endsWith(".m4v") || lower.endsWith(".mov")
