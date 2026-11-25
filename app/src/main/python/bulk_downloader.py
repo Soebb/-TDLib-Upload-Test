@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import sqlite3
+import re
 from pathlib import Path
 
 import yt_dlp
@@ -61,9 +62,11 @@ def import_links(database_path, text):
     """Import newline-separated URLs; duplicate URLs are ignored."""
     urls = []
     seen = set()
-    for line in (text or "").splitlines():
-        url = line.strip()
-        if url and not url.startswith("#") and url not in seen:
+    # Extract Instagram URLs even when surrounded by captions or separators.
+    pattern = re.compile(r'https?://(?:www\\.)?(?:instagram\\.com|instagr\\.am)/[^\\s<>\\\"\\']+', re.IGNORECASE)
+    for match in pattern.findall(text or ""):
+        url = match.rstrip(".,;)]}")
+        if url and url not in seen:
             urls.append(url)
             seen.add(url)
     conn = _connect(database_path)
@@ -317,7 +320,25 @@ def download_post(url, download_root):
             paths.extend(remaining[:len(entries) - len(paths)])
     if not paths:
         raise RuntimeError("No downloaded media files were found")
-    return json.dumps([str(path) for path in paths])
+    media = _media_items(info)
+    if len(media) != len(paths):
+        media = media[:len(paths)]
+        while len(media) < len(paths):
+            path = paths[len(media)]
+            media.append({
+                "id": path.stem,
+                "is_video": path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".heic"),
+                "width": 0, "height": 0, "duration": 0,
+                "ext": path.suffix.lstrip(".")
+            })
+    description = info.get("description") or next(
+        (entry.get("description") for entry in entries if entry.get("description")), ""
+    )
+    return json.dumps({
+        "files": [str(path) for path in paths],
+        "media": media,
+        "caption": (description or "").strip()
+    }, ensure_ascii=False)
 
 
 def cleanup_post(url, download_root):
@@ -344,3 +365,7 @@ def inspect_post_json(url):
 
 def chunk_plan_json(media_json, sent_chunks_json="{}"):
     return json.dumps(chunk_plan(json.loads(media_json), sent_chunks_json), ensure_ascii=False)
+
+
+def get_sent_chunks_json(database_path, url):
+    return json.dumps({str(key): value for key, value in get_sent_chunks(database_path, url).items()})
