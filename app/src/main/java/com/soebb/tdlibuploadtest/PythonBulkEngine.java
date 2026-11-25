@@ -40,7 +40,7 @@ public final class PythonBulkEngine {
 
     public String nextPending() {
         PyObject value = module.callAttr("next_pending", databasePath);
-        return value == null || value.isNone() ? null : value.toString();
+        return value == null || "None".equals(value.toString()) ? null : value.toString();
     }
 
     public String inspectPost(String url) {
