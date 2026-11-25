@@ -64,9 +64,9 @@ def import_links(database_path, text):
     urls = []
     seen = set()
     # Extract Instagram URLs even when surrounded by captions or separators.
-    pattern = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/[^\s<>\\"']+", re.IGNORECASE)
+    pattern = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/[^\s<>]+", re.IGNORECASE)
     for match in pattern.findall(text or ""):
-        url = match.rstrip(".,;)]}")
+        url = match.rstrip(".,;)]}\"'")
         if url and url not in seen:
             urls.append(url)
             seen.add(url)
