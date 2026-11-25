@@ -1,7 +1,7 @@
-name: Build TDLib Upload Test APK
+name: Build TDLib Bulk Downloader APK
 on:
   push:
-    branches: [ main, auth-delivery-diagnostics ]
+    branches: [ main, auth-delivery-diagnostics, instagram-bulk-tdlib-chaquopy ]
   workflow_dispatch:
 permissions:
   contents: read
@@ -33,6 +33,6 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: TDLib-Upload-Test-debug
+          name: TDLib-Bulk-Downloader-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
