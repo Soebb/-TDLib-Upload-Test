@@ -92,7 +92,7 @@ public class MainActivity extends Activity {
             }
             if(client!=null) { log("TDLib client already started."); return; }
             log("Starting TDLib...");
-            Client.setLogMessageHandler(0,(level,message)->log("TDLib: "+message));
+            Client.setLogMessageHandler(4,(level,message)->log("TDLib log [level "+level+"]: "+message));
             client=Client.create(this::onUpdate,null,null);
         } catch(Throwable e) { log("TDLib initialization failed: "+e); }
     }
@@ -116,8 +116,7 @@ public class MainActivity extends Activity {
                 });
             } else if(s instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
                 if(!phoneSubmitted) {
-                    String number=phone.getText().toString().trim().replace(" ","").replace("-","");
-                    if(!number.startsWith("+")) number="+"+number;
+                    String number=normalizePhoneNumber(phone.getText().toString());
                     phoneSubmitted=true;
                     log("Submitting phone number to Telegram...");
                     client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
@@ -147,7 +146,8 @@ public class MainActivity extends Activity {
     }
     private void onResult(TdApi.Object o) {
         if(o instanceof TdApi.Error) {
-            log("Error "+((TdApi.Error)o).code+": "+((TdApi.Error)o).message);
+            phoneSubmitted=false;
+            log("TDLIB REQUEST ERROR "+((TdApi.Error)o).code+": "+((TdApi.Error)o).message);
         } else if(o instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
             log("Current authorization state: WaitPhoneNumber");
             submitPhoneNumberIfNeeded();
@@ -231,11 +231,16 @@ public class MainActivity extends Activity {
         client.send(new TdApi.ResendAuthenticationCode(), this::onResult);
     }
 
+    private String normalizePhoneNumber(String raw) {
+        String number = raw == null ? "" : raw.trim().replaceAll("[\\s\\-()]", "");
+        if (number.startsWith("00")) number = "+" + number.substring(2);
+        else if (!number.startsWith("+")) number = "+" + number;
+        return number;
+    }
+
     private void submitPhoneNumberIfNeeded() {
         if(client==null || phoneSubmitted) return;
-        String number=phone.getText().toString().trim().replace(" ","").replace("-","");
-        if(number.startsWith("00")) number="+"+number.substring(2);
-        else if(!number.startsWith("+")) number="+"+number;
+        String number=normalizePhoneNumber(phone.getText().toString());
         phoneSubmitted=true;
         log("Submitting phone number to Telegram...");
         client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
