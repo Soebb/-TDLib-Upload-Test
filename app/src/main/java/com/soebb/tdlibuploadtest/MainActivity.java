@@ -258,15 +258,37 @@ public class MainActivity extends Activity {
                 setAccountState(s.getClass().getSimpleName());
             }
         } else if(object instanceof TdApi.UpdateFile) {
-            TdApi.File f=((TdApi.UpdateFile)object).file;
-            if(chosenFile!=null && f.local!=null && chosenFile.getAbsolutePath().equals(f.local.path) && f.remote!=null) {
-                long total=Math.max(1L,f.size);
-                log("Upload progress: "+(100L*f.remote.uploadedSize/total)+"%");
+            TdApi.File file = ((TdApi.UpdateFile)object).file;
+            if(uploadInProgress && uploadFileId != 0 && file.id == uploadFileId && file.remote != null) {
+                long total = uploadTotalBytes > 0 ? uploadTotalBytes : Math.max(1L, file.size);
+                long sent = Math.max(0L, file.remote.uploadedSize);
+                int percent = (int)Math.min(100L, sent * 100L / Math.max(1L, total));
+                runOnUiThread(() -> {
+                    uploadProgress.setVisibility(View.VISIBLE);
+                    uploadProgress.setIndeterminate(false);
+                    uploadProgress.setProgress(percent);
+                    uploadProgressText.setText("Uploading: " + percent + "% (" + formatBytes(sent) + " / " + formatBytes(total) + ")");
+                });
+                log("Upload progress: " + percent + "%");
             }
         } else if(object instanceof TdApi.UpdateMessageSendSucceeded) {
-            log("UPLOAD SUCCESS. Telegram message ID: "+((TdApi.UpdateMessageSendSucceeded)object).message.id);
+            TdApi.Message message = ((TdApi.UpdateMessageSendSucceeded)object).message;
+            uploadInProgress = false;
+            runOnUiThread(() -> {
+                uploadProgress.setProgress(100);
+                uploadProgressText.setText("Upload complete: 100%");
+                uploadButton.setEnabled(true);
+            });
+            log("UPLOAD SUCCESS. Telegram message ID: " + message.id);
         } else if(object instanceof TdApi.UpdateMessageSendFailed) {
-            log("UPLOAD FAILED: "+((TdApi.UpdateMessageSendFailed)object).error.message);
+            TdApi.UpdateMessageSendFailed failed = (TdApi.UpdateMessageSendFailed)object;
+            uploadInProgress = false;
+            runOnUiThread(() -> {
+                uploadProgress.setIndeterminate(false);
+                uploadProgressText.setText("Upload failed: " + failed.error.message);
+                uploadButton.setEnabled(true);
+            });
+            log("UPLOAD FAILED. Error " + failed.error.code + ": " + failed.error.message);
         }
     }
     private void onResult(TdApi.Object o) {
@@ -397,22 +419,84 @@ public class MainActivity extends Activity {
         }
     }
     private void upload() {
-        if(client==null || chosenFile==null || !chosenFile.exists()) { log("Connect first and choose a file."); return; }
-        String username=channel.getText().toString().trim().replace("@","");
-        if(username.isEmpty()) { log("Enter a public channel username."); return; }
-        log("Resolving @"+username+"...");
-        client.send(new TdApi.SearchPublicChat(username),o->{
-            if(o instanceof TdApi.Error) { log("Channel lookup failed: "+((TdApi.Error)o).message); return; }
-            TdApi.Chat chat=(TdApi.Chat)o;
-            log("Found channel: "+chat.title+" (ID "+chat.id+"). Starting upload...");
-            TdApi.InputDocument document=new TdApi.InputDocument(
-                new TdApi.InputFileLocal(chosenFile.getAbsolutePath()),
-                null,
-                false);
-            TdApi.InputMessageContent content=new TdApi.InputMessageDocument(document,null);
-            client.send(new TdApi.SendMessage(chat.id,null,null,null,null,content),this::onResult);
+        log("Upload button pressed.");
+        if(client == null) { log("UPLOAD BLOCKED: TDLib client is not initialized."); return; }
+        if(!isSignedIn) { log("UPLOAD BLOCKED: account is not signed in yet."); return; }
+        if(chosenFile == null || !chosenFile.exists()) { log("UPLOAD BLOCKED: choose a file first."); return; }
+        if(uploadInProgress) { log("An upload is already in progress."); return; }
+        String username = channel.getText().toString().trim().replace("@", "");
+        if(username.isEmpty()) { log("UPLOAD BLOCKED: enter a public channel username."); return; }
+
+        uploadInProgress = true;
+        uploadFileId = 0;
+        uploadTotalBytes = chosenFile.length();
+        runOnUiThread(() -> {
+            uploadButton.setEnabled(false);
+            uploadProgress.setVisibility(View.VISIBLE);
+            uploadProgress.setIndeterminate(true);
+            uploadProgress.setProgress(0);
+            uploadProgressText.setText("Preparing upload...");
+        });
+        log("Starting upload workflow. File: " + chosenFile.getName() + ", size: " + formatBytes(uploadTotalBytes));
+        log("Resolving public channel @" + username + "...");
+        client.send(new TdApi.SearchPublicChat(username), result -> {
+            if(result instanceof TdApi.Error) {
+                TdApi.Error error = (TdApi.Error)result;
+                uploadInProgress = false;
+                runOnUiThread(() -> {
+                    uploadButton.setEnabled(true);
+                    uploadProgress.setIndeterminate(false);
+                    uploadProgressText.setText("Channel lookup failed.");
+                });
+                log("CHANNEL LOOKUP FAILED. Error " + error.code + ": " + error.message);
+                return;
+            }
+            if(!(result instanceof TdApi.Chat)) {
+                uploadInProgress = false;
+                runOnUiThread(() -> uploadButton.setEnabled(true));
+                log("CHANNEL LOOKUP FAILED: unexpected TDLib response " + result.getClass().getSimpleName());
+                return;
+            }
+            TdApi.Chat chat = (TdApi.Chat)result;
+            log("Channel resolved: " + chat.title + " (ID " + chat.id + ").");
+            log("Sending video/document to Telegram...");
+            TdApi.InputDocument document = new TdApi.InputDocument(
+                new TdApi.InputFileLocal(chosenFile.getAbsolutePath()), null, false);
+            TdApi.InputMessageContent content = new TdApi.InputMessageDocument(document, null);
+            client.send(new TdApi.SendMessage(chat.id, null, null, null, null, content), response -> {
+                if(response instanceof TdApi.Error) {
+                    TdApi.Error error = (TdApi.Error)response;
+                    uploadInProgress = false;
+                    runOnUiThread(() -> {
+                        uploadButton.setEnabled(true);
+                        uploadProgress.setIndeterminate(false);
+                        uploadProgressText.setText("Send request failed.");
+                    });
+                    log("SEND MESSAGE FAILED. Error " + error.code + ": " + error.message);
+                    return;
+                }
+                if(response instanceof TdApi.Message) {
+                    TdApi.Message message = (TdApi.Message)response;
+                    if(message.content instanceof TdApi.MessageDocument) {
+                        uploadFileId = ((TdApi.MessageDocument)message.content).document.document.id;
+                        log("Telegram accepted the message. Tracking upload file ID " + uploadFileId + ".");
+                    } else {
+                        log("Telegram accepted the send request; waiting for upload updates.");
+                    }
+                } else {
+                    log("Send request response: " + response.getClass().getSimpleName());
+                }
+            });
         });
     }
+
+    private String formatBytes(long bytes) {
+        if(bytes < 1024) return bytes + " B";
+        if(bytes < 1024L * 1024L) return String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0);
+        if(bytes < 1024L * 1024L * 1024L) return String.format(java.util.Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
+        return String.format(java.util.Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+
     @Override protected void onPause() {
         saveForm();
         super.onPause();
