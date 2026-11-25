@@ -885,6 +885,11 @@ public class MainActivity extends Activity {
 
     private void failCurrentBulkPost(String reason) {
         final String failedUrl = bulkCurrentUrl;
+        synchronized (bulkAwaitingMessageIds) {
+            bulkAwaitingMessageIds.clear();
+            bulkSucceededBeforeResponse.clear();
+            bulkChunkResponseReceived = false;
+        }
         io.execute(() -> {
             try { if (failedUrl != null && !failedUrl.isEmpty()) bulkEngine.markFailed(failedUrl, reason); }
             catch (Throwable ignored) {}
