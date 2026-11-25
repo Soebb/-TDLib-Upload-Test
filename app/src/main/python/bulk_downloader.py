@@ -52,6 +52,7 @@ def _connect(database_path):
 def initialize(database_path):
     conn = _connect(database_path)
     try:
+        conn.execute("UPDATE posts SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'")
         conn.commit()
         return counts(database_path)
     finally:
@@ -63,7 +64,7 @@ def import_links(database_path, text):
     urls = []
     seen = set()
     # Extract Instagram URLs even when surrounded by captions or separators.
-    pattern = re.compile(r'https?://(?:www\\.)?(?:instagram\\.com|instagr\\.am)/[^\\s<>\\\"\\']+', re.IGNORECASE)
+    pattern = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/[^\s<>\\"']+", re.IGNORECASE)
     for match in pattern.findall(text or ""):
         url = match.rstrip(".,;)]}")
         if url and url not in seen:
@@ -77,6 +78,11 @@ def import_links(database_path, text):
             [(url,) for url in urls],
         )
         inserted = conn.total_changes - before
+        if urls:
+            conn.executemany(
+                "UPDATE posts SET status='pending', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='failed'",
+                [(url,) for url in urls],
+            )
         conn.commit()
         return {"received": len(urls), "inserted": inserted, "duplicates": len(urls) - inserted}
     finally:
@@ -101,7 +107,7 @@ def next_pending(database_path):
     conn = _connect(database_path)
     try:
         row = conn.execute(
-            "SELECT url FROM posts WHERE status IN ('pending','failed') ORDER BY rowid LIMIT 1"
+            "SELECT url FROM posts WHERE status='pending' ORDER BY rowid LIMIT 1"
         ).fetchone()
         return row[0] if row else None
     finally:
