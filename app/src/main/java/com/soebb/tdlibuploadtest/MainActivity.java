@@ -388,6 +388,12 @@ public class MainActivity extends Activity {
                 uploadButton.setEnabled(!bulkUploadRunning);
             });
             log("UPLOAD SUCCESS. Telegram message ID: " + message.id);
+            if (bulkUploadRunning) {
+                synchronized (bulkAwaitingMessageIds) {
+                    if (!bulkAwaitingMessageIds.remove(message.id)) bulkSucceededBeforeResponse.add(message.id);
+                }
+                completeBulkChunkIfReady();
+            }
         } else if(object instanceof TdApi.UpdateMessageSendFailed) {
             TdApi.UpdateMessageSendFailed failed = (TdApi.UpdateMessageSendFailed)object;
             uploadInProgress = false;
@@ -397,6 +403,7 @@ public class MainActivity extends Activity {
                 uploadButton.setEnabled(!bulkUploadRunning);
             });
             log("UPLOAD FAILED. Error " + failed.error.code + ": " + failed.error.message);
+            if (bulkUploadRunning) failCurrentBulkPost("TDLib upload failed: " + failed.error.message);
         }
     }
     private void onResult(TdApi.Object o) {
