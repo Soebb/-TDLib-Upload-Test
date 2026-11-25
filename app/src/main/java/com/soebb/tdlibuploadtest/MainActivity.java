@@ -786,20 +786,56 @@ public class MainActivity extends Activity {
                 uploadProgressText.setText("Uploading post media " + (bulkChunkIndex + 1) + "/" + bulkChunkPlan.length() + "...");
             });
             log("Sending media batch " + (chunkNumber + 1) + " (" + contents.length + " item(s)) via TDLib.");
+            bulkCurrentChunkNumber = chunkNumber;
+            bulkCurrentChunkSignature = signature;
+            bulkChunkResponseReceived = false;
+            bulkAwaitingMessageIds.clear();
+            bulkSucceededBeforeResponse.clear();
             TdApi.Function<?> request = contents.length == 1
                 ? new TdApi.SendMessage(bulkChatId, null, null, null, null, contents[0])
                 : new TdApi.SendMessageAlbum(bulkChatId, null, null, null, contents);
             client.send(request, response -> {
-                if (response instanceof TdApi.Error) { failCurrentBulkPost("TDLib rejected media batch: " + ((TdApi.Error) response).message); return; }
-                io.execute(() -> {
-                    try {
-                        bulkEngine.markChunkSent(bulkCurrentUrl, chunkNumber, signature);
-                        bulkChunkIndex++;
-                        sendNextBulkChunk();
-                    } catch (Throwable error) { failCurrentBulkPost("Could not save sent batch state: " + error.getMessage()); }
-                });
+                if (response instanceof TdApi.Error) {
+                    failCurrentBulkPost("TDLib rejected media batch: " + ((TdApi.Error) response).message);
+                    return;
+                }
+                synchronized (bulkAwaitingMessageIds) {
+                    if (response instanceof TdApi.Message) {
+                        long id = ((TdApi.Message) response).id;
+                        if (!bulkSucceededBeforeResponse.remove(id)) bulkAwaitingMessageIds.add(id);
+                    } else if (response instanceof TdApi.Messages) {
+                        for (TdApi.Message sent : ((TdApi.Messages) response).messages) {
+                            if (!bulkSucceededBeforeResponse.remove(sent.id)) bulkAwaitingMessageIds.add(sent.id);
+                        }
+                    } else {
+                        failCurrentBulkPost("Unexpected TDLib send response: " + response.getClass().getSimpleName());
+                        return;
+                    }
+                    bulkChunkResponseReceived = true;
+                }
+                completeBulkChunkIfReady();
             });
         } catch (Throwable error) { failCurrentBulkPost("Could not prepare media batch: " + error.getMessage()); }
+    }
+
+    private void completeBulkChunkIfReady() {
+        boolean ready;
+        synchronized (bulkAwaitingMessageIds) {
+            ready = bulkChunkResponseReceived && bulkAwaitingMessageIds.isEmpty();
+        }
+        if (!ready || !bulkUploadRunning) return;
+        final String url = bulkCurrentUrl;
+        final int number = bulkCurrentChunkNumber;
+        final String signature = bulkCurrentChunkSignature;
+        io.execute(() -> {
+            try {
+                bulkEngine.markChunkSent(url, number, signature);
+                bulkChunkIndex++;
+                sendNextBulkChunk();
+            } catch (Throwable error) {
+                failCurrentBulkPost("Could not save completed media batch: " + error.getMessage());
+            }
+        });
     }
 
     private TdApi.InputMessageContent buildBulkContent(File file, JSONObject meta, String captionText) throws Exception {
