@@ -21,8 +21,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
-    private EditText apiId, apiHash, phone, code, channel;
-    private TextView status, selected, codeInfoView, accountState;
+    private EditText apiId, apiHash, phone, code, channel, captionInput, linksInput;
+    private TextView status, selected, codeInfoView, accountState, queueSummary;
     private Button resendButton, connectButton, submitCodeButton, uploadButton;
     private ProgressBar uploadProgress;
     private TextView uploadProgressText;
@@ -44,6 +44,7 @@ public class MainActivity extends Activity {
     private boolean phoneSubmitted = false;
     private boolean loginRequested = false;
     private SharedPreferences preferences;
+    private PythonBulkEngine bulkEngine;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -51,6 +52,7 @@ public class MainActivity extends Activity {
         preferences = getSharedPreferences("tdlib_upload_test", MODE_PRIVATE);
         restoreForm();
         attachFormPersistence();
+        initializeBulkEngine();
         setAccountState("Checking saved session...");
         if (hasSavedCredentials()) startTdlib(false);
         else {
@@ -86,6 +88,31 @@ public class MainActivity extends Activity {
         resendButton.setOnClickListener(v -> requestNextCodeMethod());
         root.addView(resendButton);
         channel = field(root,"Public channel username (e.g. @mychannel)");
+        captionInput = field(root,"Caption override (optional)");
+        TextView bulkTitle = new TextView(this);
+        bulkTitle.setText("Instagram bulk queue");
+        bulkTitle.setTextSize(20);
+        bulkTitle.setPadding(0,24,0,4);
+        root.addView(bulkTitle);
+        TextView bulkHint = new TextView(this);
+        bulkHint.setText("Paste Instagram links, one URL per line, or import a links.txt file. SQLite stores progress locally.");
+        root.addView(bulkHint);
+        linksInput = new EditText(this);
+        linksInput.setHint("https://www.instagram.com/reel/...");
+        linksInput.setMinLines(5);
+        linksInput.setMaxLines(10);
+        linksInput.setGravity(Gravity.TOP | Gravity.LEFT);
+        linksInput.setTextDirection(View.TEXT_DIRECTION_LTR);
+        linksInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            | android.text.InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
+        root.addView(linksInput);
+        button(root,"Import links into SQLite",v -> importLinks());
+        queueSummary = new TextView(this);
+        queueSummary.setText("Queue database is initializing...");
+        root.addView(queueSummary);
+        button(root,"Refresh queue status",v -> refreshQueueStatus());
+        button(root,"Import links.txt file",v -> chooseLinksFile());
         button(root,"Choose file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
         uploadButton = button(root,"Upload file to channel",v -> upload());
@@ -154,6 +181,7 @@ public class MainActivity extends Activity {
         phone.setText(preferences.getString("phone", ""));
         code.setText(preferences.getString("code", ""));
         channel.setText(preferences.getString("channel", ""));
+        captionInput.setText(preferences.getString("caption", ""));
     }
 
     private void attachFormPersistence() {
@@ -167,6 +195,7 @@ public class MainActivity extends Activity {
         phone.addTextChangedListener(watcher);
         code.addTextChangedListener(watcher);
         channel.addTextChangedListener(watcher);
+        captionInput.addTextChangedListener(watcher);
     }
 
     private void saveForm() {
@@ -177,7 +206,59 @@ public class MainActivity extends Activity {
             .putString("phone", phone.getText().toString())
             .putString("code", code.getText().toString())
             .putString("channel", channel.getText().toString())
+            .putString("caption", captionInput.getText().toString())
             .apply();
+    }
+
+    private void initializeBulkEngine() {
+        io.execute(() -> {
+            try {
+                bulkEngine = new PythonBulkEngine(this);
+                String counts = bulkEngine.counts();
+                runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
+                log("Python/Chaquopy initialized. yt-dlp and sqlite3 are ready.");
+            } catch (Throwable error) {
+                log("Python engine initialization failed: " + error.getMessage());
+            }
+        });
+    }
+
+    private void importLinks() {
+        String text = linksInput.getText().toString();
+        if (text.trim().isEmpty()) {
+            log("No links entered.");
+            return;
+        }
+        io.execute(() -> {
+            try {
+                if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
+                String result = bulkEngine.importLinks(text);
+                String counts = bulkEngine.counts();
+                runOnUiThread(() -> queueSummary.setText("Import: " + result + "\nQueue: " + counts));
+                log("Links imported into Python SQLite database: " + result);
+            } catch (Throwable error) {
+                log("Link import failed: " + error.getMessage());
+            }
+        });
+    }
+
+    private void refreshQueueStatus() {
+        io.execute(() -> {
+            try {
+                if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
+                String counts = bulkEngine.counts();
+                runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
+            } catch (Throwable error) {
+                log("Could not read queue database: " + error.getMessage());
+            }
+        });
+    }
+
+    private void chooseLinksFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.setType("text/plain");
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        startActivityForResult(intent, 1002);
     }
 
     private void startLogin() { startTdlib(true); }
@@ -427,7 +508,22 @@ public class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
         super.onActivityResult(requestCode,resultCode,data);
-        if(requestCode==1001 && resultCode==RESULT_OK && data!=null) {
+        if(requestCode==1002 && resultCode==RESULT_OK && data!=null) {
+            Uri uri = data.getData();
+            io.execute(() -> {
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                    byte[] buffer = new byte[8192];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
+                    String text = out.toString("UTF-8");
+                    runOnUiThread(() -> linksInput.setText(text));
+                    log("Loaded links text file (" + text.split("\\r?\\n").length + " lines). Tap Import links into SQLite.");
+                } catch (Exception error) {
+                    log("Could not read links file: " + error.getMessage());
+                }
+            });
+        } else if(requestCode==1001 && resultCode==RESULT_OK && data!=null) {
             Uri uri=data.getData();
             io.execute(()->{
                 try {
@@ -517,9 +613,10 @@ public class MainActivity extends Activity {
 
                 TdApi.InputMessageVideo videoMessage = new TdApi.InputMessageVideo();
                 videoMessage.video = inputVideo;
-                videoMessage.caption = null;
+                String captionText = captionInput.getText().toString().trim();
+                videoMessage.caption = captionText.isEmpty() ? null : new TdApi.FormattedText(captionText, new TdApi.TextEntity[0]);
                 content = videoMessage;
-                log("Sending as Telegram video (" + duration + "s, " + width + "x" + height + ").");
+                log("Sending as Telegram video (" + duration + "s, " + width + "x" + height + "). Caption: " + (captionText.isEmpty() ? "none" : "custom text"));
             } else {
                 TdApi.InputDocument document = new TdApi.InputDocument(
                     new TdApi.InputFileLocal(chosenFile.getAbsolutePath()), null, false);
