@@ -302,6 +302,22 @@ public class MainActivity extends Activity {
         } else if(o instanceof TdApi.AuthorizationStateWaitCode) {
             showCodeInfo(((TdApi.AuthorizationStateWaitCode)o).codeInfo);
             setAccountState("Waiting for login code");
+            runOnUiThread(() -> {
+                code.setVisibility(View.VISIBLE);
+                submitCodeButton.setVisibility(View.VISIBLE);
+                codeInfoView.setVisibility(View.VISIBLE);
+                resendButton.setVisibility(View.VISIBLE);
+            });
+        } else if(o instanceof TdApi.AuthorizationStateReady) {
+            isSignedIn = true;
+            loginRequested = false;
+            phoneSubmitted = true;
+            setAccountState("Signed in");
+            runOnUiThread(() -> setLoginUiVisible(false));
+            log("Authorization complete: account is signed in and ready to upload.");
+        } else if(o instanceof TdApi.AuthorizationStateWaitPassword) {
+            setAccountState("Password required");
+            log("Two-step verification password is required, but this build has no password field yet.");
         } else if(o instanceof TdApi.Ok && resendButton != null) {
             log("Request accepted. Waiting for Telegram...");
         }
