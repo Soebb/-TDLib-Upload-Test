@@ -1,32 +1,18 @@
-# TDLib Upload Test
+# TDLib Instagram Bulk Downloader
 
-A minimal Android test app using Telegram's official TDLib Java/JNI interface.
+Android app prototype combining Python/Chaquopy + yt-dlp for downloading and official TDLib Java/JNI for Telegram uploads.
 
-## What it tests
-- Sign in to a personal Telegram account with phone number, login code, and optional 2-step verification password.
-- Connect directly through TDLib/MTProto (no Bot API and no proxy configured by the app).
-- Resolve a public channel by username and upload one selected video.
-- Show TDLib authorization and upload status messages.
+## Architecture
+- **Java + TDLib 1.8.70:** Telegram account authorization, channel resolution, media sending and upload progress.
+- **Python + Chaquopy 17 / Python 3.11:** yt-dlp extraction and downloads.
+- **Python sqlite3:** persistent URL queue, per-post status, retry count, and per-album chunk checkpoints.
+- Media groups are planned in chunks of at most 10 items; already-sent chunks can be skipped after restart.
+
+## Current development stage
+This branch introduces the Chaquopy runtime and Python downloader/database layer. The existing TDLib sign-in and single-file upload screen is retained while the bulk queue UI and Java-to-Python/TDLib orchestration are added in subsequent steps.
 
 ## Build
-GitHub Actions downloads a pinned Android TDLib build (TDLib 1.8.70, Java JNI, arm64-v8a / armeabi-v7a / x86_64), verifies its SHA-256, and builds the debug APK.
-
-Open Actions > Build TDLib Upload Test APK > Artifacts to download the APK.
-
-## Setup
-1. Create an API ID and API Hash at https://my.telegram.org.
-2. Install the APK and enter those values.
-3. Enter your phone number in international format and tap Connect / Send login code.
-4. Enter the Telegram login code; if prompted, enter your 2-step verification password.
-5. Enter a public channel username (for example @mychannel), choose a file, and upload.
-
-The account must already be an administrator of the destination channel with permission to post.
+GitHub Actions downloads the pinned Android TDLib 1.8.70 build, verifies its SHA-256, then builds a debug APK with Gradle 8.9, Android Gradle Plugin 8.7.3, and Chaquopy 17.0.0.
 
 ## Security
-- API credentials and account session are stored only in the app's private storage; do not share app data or device backups.
-- Never publish API credentials, login codes, passwords, or TDLib session files.
-- This is a test client, not a production Telegram client. It does not yet implement a remote logout/session wipe control.
-- Use only a channel you control for testing.
-
-## TDLib
-The app uses TDLib's Java/JNI interface. Native Android binaries are from a pinned TDLib 1.8.70 Android build and are checked against its published SHA-256.
+Keep Telegram API credentials, login codes, passwords, session files, and private cookies out of source control. Use only destination channels you control.
