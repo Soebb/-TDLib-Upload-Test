@@ -378,7 +378,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 uploadProgress.setProgress(100);
                 uploadProgressText.setText("Upload complete: 100%");
-                uploadButton.setEnabled(true);
+                uploadButton.setEnabled(!bulkUploadRunning);
             });
             log("UPLOAD SUCCESS. Telegram message ID: " + message.id);
         } else if(object instanceof TdApi.UpdateMessageSendFailed) {
@@ -387,7 +387,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 uploadProgress.setIndeterminate(false);
                 uploadProgressText.setText("Upload failed: " + failed.error.message);
-                uploadButton.setEnabled(true);
+                uploadButton.setEnabled(!bulkUploadRunning);
             });
             log("UPLOAD FAILED. Error " + failed.error.code + ": " + failed.error.message);
         }
@@ -528,7 +528,7 @@ public class MainActivity extends Activity {
                     while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
                     String text = out.toString("UTF-8");
                     runOnUiThread(() -> linksInput.setText(text));
-                    log("Loaded links text file (" + text.split("\\r?\\n").length + " lines). Tap Import links into SQLite.");
+                    log("Loaded links text file (" + text.split("\\r?\\n").length + " lines). Tap Start uploading to process it.");
                 } catch (Exception error) {
                     log("Could not read links file: " + error.getMessage());
                 }
@@ -687,8 +687,14 @@ public class MainActivity extends Activity {
                 if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
                 JSONObject imported = new JSONObject(bulkEngine.importLinks(pastedLinks));
                 int received = imported.optInt("received", 0);
-                if (received == 0) { finishBulkUpload("No Instagram links found in the text box or imported links file."); return; }
-                log("Found " + received + " Instagram link(s); " + imported.optInt("inserted", 0) + " new link(s) added to SQLite.");
+                String existingCounts = bulkEngine.counts();
+                JSONObject existing = new JSONObject(existingCounts);
+                if (received == 0 && existing.optInt("pending", 0) == 0) {
+                    finishBulkUpload("No Instagram links found and the SQLite queue has no pending items.");
+                    return;
+                }
+                log("Found " + received + " link(s) in the input; " + imported.optInt("inserted", 0)
+                    + " new link(s) added. Existing pending items will also be processed.");
                 String counts = bulkEngine.counts();
                 runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
                 client.send(new TdApi.SearchPublicChat(username), response -> {
