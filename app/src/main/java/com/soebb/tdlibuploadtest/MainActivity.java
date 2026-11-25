@@ -31,6 +31,7 @@ public class MainActivity extends Activity {
     private boolean uploadInProgress = false;
     private int uploadFileId = 0;
     private long uploadTotalBytes = 0;
+    private int lastLoggedProgressStep = -1;
     private Client client;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int resendSecondsRemaining = 0;
@@ -117,10 +118,15 @@ public class MainActivity extends Activity {
         android.util.Log.i("TDLibUploadTest", message);
         runOnUiThread(() -> {
             logBuffer.append(line).append("\n");
+            // Preserve the opening context and recent activity, while bounding memory use.
             String[] lines = logBuffer.toString().split("\n");
-            if (lines.length > 80) {
+            if (lines.length > 300) {
+                StringBuilder compact = new StringBuilder();
+                for (int i = 0; i < 30; i++) compact.append(lines[i]).append("\n");
+                compact.append("... older middle log entries omitted ...\n");
+                for (int i = lines.length - 269; i < lines.length; i++) compact.append(lines[i]).append("\n");
                 logBuffer.setLength(0);
-                for (int i = lines.length - 80; i < lines.length; i++) logBuffer.append(lines[i]).append("\n");
+                logBuffer.append(compact);
             }
             status.setText(logBuffer.toString());
         });
@@ -267,9 +273,13 @@ public class MainActivity extends Activity {
                     uploadProgress.setVisibility(View.VISIBLE);
                     uploadProgress.setIndeterminate(false);
                     uploadProgress.setProgress(percent);
-                    uploadProgressText.setText("Uploading: " + percent + "% (" + formatBytes(sent) + " / " + formatBytes(total) + ")");
+                    uploadProgressText.setText("Uploading " + percent + "%");
                 });
-                log("Upload progress: " + percent + "%");
+                int progressStep = percent / 10;
+                if (progressStep != lastLoggedProgressStep && progressStep > 0) {
+                    lastLoggedProgressStep = progressStep;
+                    log("Upload: " + (progressStep * 10) + "%");
+                }
             }
         } else if(object instanceof TdApi.UpdateMessageSendSucceeded) {
             TdApi.Message message = ((TdApi.UpdateMessageSendSucceeded)object).message;
@@ -445,6 +455,7 @@ public class MainActivity extends Activity {
 
         uploadInProgress = true;
         uploadFileId = 0;
+        lastLoggedProgressStep = -1;
         uploadTotalBytes = chosenFile.length();
         runOnUiThread(() -> {
             uploadButton.setEnabled(false);
