@@ -870,7 +870,14 @@ public class MainActivity extends Activity {
         if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
             lower.endsWith(".webp") || lower.endsWith(".heic")) {
             TdApi.InputMessagePhoto message = new TdApi.InputMessagePhoto();
-            message.photo = new TdApi.InputPhotoLocal(file.getAbsolutePath());
+            message.photo = new TdApi.InputPhoto(
+                new TdApi.InputFileLocal(file.getAbsolutePath()),
+                null,
+                null,
+                new int[0],
+                width,
+                height
+            );
             message.caption = caption;
             return message;
         }
