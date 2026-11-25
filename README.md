@@ -5,7 +5,7 @@ A minimal Android test app using Telegram's official TDLib Java/JNI interface.
 ## What it tests
 - Sign in to a personal Telegram account with phone number, login code, and optional 2-step verification password.
 - Connect directly through TDLib/MTProto (no Bot API and no proxy configured by the app).
-- Resolve a public channel by username and upload one selected file as a document.
+- Resolve a public channel by username and upload one selected video.
 - Show TDLib authorization and upload status messages.
 
 ## Build
