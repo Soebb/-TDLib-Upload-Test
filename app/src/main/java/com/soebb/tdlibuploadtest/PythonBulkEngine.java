@@ -52,7 +52,7 @@ public final class PythonBulkEngine {
     }
 
     public String sentChunks(String url) {
-        return module.callAttr("get_sent_chunks", databasePath, url).toString();
+        return module.callAttr("get_sent_chunks_json", databasePath, url).toString();
     }
 
     public String planChunks(String mediaJson, String sentChunksJson) {
