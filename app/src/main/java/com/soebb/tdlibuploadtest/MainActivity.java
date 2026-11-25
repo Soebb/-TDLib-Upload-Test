@@ -203,6 +203,8 @@ public class MainActivity extends Activity {
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
                 TdApi.AuthenticationCodeInfo info = ((TdApi.AuthorizationStateWaitCode)s).codeInfo;
                 showCodeInfo(info);
+                codeInfoView.setVisibility(View.VISIBLE);
+                resendButton.setVisibility(View.VISIBLE);
                 setAccountState("Waiting for login code");
                 log("Enter the code sent by Telegram.");
             } else if(s instanceof TdApi.AuthorizationStateWaitPassword) {
@@ -212,6 +214,8 @@ public class MainActivity extends Activity {
                 loginRequested = false;
                 phoneSubmitted = true;
                 setAccountState("Signed in");
+                codeInfoView.setVisibility(View.GONE);
+                resendButton.setVisibility(View.GONE);
                 log("Connected. Ready to upload.");
             } else if(s instanceof TdApi.AuthorizationStateLoggingOut) {
                 setAccountState("Signing out...");
