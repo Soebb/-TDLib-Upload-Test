@@ -19,6 +19,8 @@ import org.drinkless.tdlib.TdApi;
 import java.io.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private EditText apiId, apiHash, phone, code, channel, captionInput, linksInput;
@@ -45,6 +47,14 @@ public class MainActivity extends Activity {
     private boolean loginRequested = false;
     private SharedPreferences preferences;
     private PythonBulkEngine bulkEngine;
+    private volatile boolean bulkUploadRunning = false;
+    private long bulkChatId = 0;
+    private String bulkCurrentUrl = "";
+    private String bulkCurrentCaption = "";
+    private JSONArray bulkCurrentFiles;
+    private JSONArray bulkCurrentMedia;
+    private JSONArray bulkChunkPlan;
+    private int bulkChunkIndex = 0;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -113,9 +123,9 @@ public class MainActivity extends Activity {
         root.addView(queueSummary);
         button(root,"Refresh queue status",v -> refreshQueueStatus());
         button(root,"Import links.txt file",v -> chooseLinksFile());
-        button(root,"Choose file",v -> chooseFile());
+        button(root,"Upload a local file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
-        uploadButton = button(root,"Upload file to channel",v -> upload());
+        uploadButton = button(root,"Start uploading",v -> startBulkUpload());
         uploadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         uploadProgress.setMax(100);
         uploadProgress.setVisibility(View.GONE);
@@ -535,7 +545,12 @@ public class MainActivity extends Activity {
                     try(InputStream in=getContentResolver().openInputStream(uri); OutputStream os=new FileOutputStream(out)) {
                         byte[] b=new byte[64*1024]; int n; while((n=in.read(b))>0) os.write(b,0,n);
                     }
-                    chosenFile=out; runOnUiThread(()->selected.setText(out.getName()+" ("+out.length()+" bytes)"));
+                    chosenFile=out;
+                    runOnUiThread(()->{
+                        selected.setText(out.getName()+" ("+formatBytes(out.length())+")");
+                        log("Local file selected. Starting upload automatically.");
+                        upload();
+                    });
                 } catch(Exception e) { log("File copy failed: "+e); }
             });
         }
