@@ -23,7 +23,14 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private EditText apiId, apiHash, phone, code, channel;
     private TextView status, selected, codeInfoView, accountState;
-    private Button resendButton;
+    private Button resendButton, connectButton, submitCodeButton, uploadButton;
+    private ProgressBar uploadProgress;
+    private TextView uploadProgressText;
+    private final StringBuilder logBuffer = new StringBuilder();
+    private boolean isSignedIn = false;
+    private boolean uploadInProgress = false;
+    private int uploadFileId = 0;
+    private long uploadTotalBytes = 0;
     private Client client;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int resendSecondsRemaining = 0;
@@ -65,9 +72,9 @@ public class MainActivity extends Activity {
         apiId = field(root,"API ID (from my.telegram.org)");
         apiHash = field(root,"API Hash");
         phone = field(root,"Phone number (international format)");
-        button(root,"Connect / Send login code",v -> startLogin());
+        connectButton = button(root,"Connect / Send login code",v -> startLogin());
         code = field(root,"Telegram login code");
-        button(root,"Submit code",v -> submitCode());
+        submitCodeButton = button(root,"Submit code",v -> submitCode());
         codeInfoView = new TextView(this);
         codeInfoView.setText("Code delivery information will appear here.");
         codeInfoView.setPadding(0,12,0,8);
@@ -80,7 +87,14 @@ public class MainActivity extends Activity {
         channel = field(root,"Public channel username (e.g. @mychannel)");
         button(root,"Choose file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
-        button(root,"Upload file to channel",v -> upload());
+        uploadButton = button(root,"Upload file to channel",v -> upload());
+        uploadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        uploadProgress.setMax(100);
+        uploadProgress.setVisibility(View.GONE);
+        root.addView(uploadProgress);
+        uploadProgressText = new TextView(this);
+        uploadProgressText.setText("Upload idle");
+        root.addView(uploadProgressText);
         status = new TextView(this); status.setTextIsSelectable(true); status.setText("Not connected"); status.setPadding(0,24,0,0); root.addView(status);
         setContentView(scroll);
     }
@@ -95,11 +109,28 @@ public class MainActivity extends Activity {
         root.addView(e);
         return e;
     }
-    private void button(LinearLayout root,String text,View.OnClickListener click) {
-        Button b=new Button(this); b.setText(text); b.setOnClickListener(click); root.addView(b);
+    private Button button(LinearLayout root,String text,View.OnClickListener click) {
+        Button b=new Button(this); b.setText(text); b.setOnClickListener(click); root.addView(b); return b;
     }
     private void log(String message) {
-        runOnUiThread(() -> status.setText(message));
+        String line = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date()) + " " + message;
+        android.util.Log.i("TDLibUploadTest", message);
+        runOnUiThread(() -> {
+            logBuffer.append(line).append("\n");
+            String[] lines = logBuffer.toString().split("\n");
+            if (lines.length > 80) {
+                logBuffer.setLength(0);
+                for (int i = lines.length - 80; i < lines.length; i++) logBuffer.append(lines[i]).append("\n");
+            }
+            status.setText(logBuffer.toString());
+        });
+    }
+
+    private void setLoginUiVisible(boolean visible) {
+        int v = visible ? View.VISIBLE : View.GONE;
+        apiId.setVisibility(v); apiHash.setVisibility(v); phone.setVisibility(v);
+        connectButton.setVisibility(v); code.setVisibility(v); submitCodeButton.setVisibility(v);
+        codeInfoView.setVisibility(v); resendButton.setVisibility(v);
     }
 
     private void setAccountState(String state) {
@@ -213,10 +244,10 @@ public class MainActivity extends Activity {
             } else if(s instanceof TdApi.AuthorizationStateReady) {
                 loginRequested = false;
                 phoneSubmitted = true;
+                isSignedIn = true;
                 setAccountState("Signed in");
-                codeInfoView.setVisibility(View.GONE);
-                resendButton.setVisibility(View.GONE);
-                log("Signed in. Ready to upload.");
+                runOnUiThread(() -> setLoginUiVisible(false));
+                log("Authorization complete: account is signed in and ready to upload.");
             } else if(s instanceof TdApi.AuthorizationStateLoggingOut) {
                 setAccountState("Signing out...");
             } else if(s instanceof TdApi.AuthorizationStateClosing) {
