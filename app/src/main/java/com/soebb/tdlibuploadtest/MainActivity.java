@@ -487,9 +487,40 @@ public class MainActivity extends Activity {
             TdApi.Chat chat = (TdApi.Chat)result;
             log("Channel resolved: " + chat.title + " (ID " + chat.id + ").");
             log("Sending video/document to Telegram...");
-            TdApi.InputDocument document = new TdApi.InputDocument(
-                new TdApi.InputFileLocal(chosenFile.getAbsolutePath()), null, false);
-            TdApi.InputMessageContent content = new TdApi.InputMessageDocument(document, null);
+            TdApi.InputMessageContent content;
+            if (isVideoFile(chosenFile.getName())) {
+                int duration = 0, width = 0, height = 0;
+                android.media.MediaMetadataRetriever metadata = new android.media.MediaMetadataRetriever();
+                try {
+                    metadata.setDataSource(chosenFile.getAbsolutePath());
+                    String d = metadata.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    String w = metadata.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                    String h = metadata.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+                    if (d != null) duration = Math.max(0, (int)(Long.parseLong(d) / 1000L));
+                    if (w != null) width = Math.max(0, Integer.parseInt(w));
+                    if (h != null) height = Math.max(0, Integer.parseInt(h));
+                } catch (Exception metadataError) {
+                    log("Video metadata unavailable; Telegram will inspect the file.");
+                } finally {
+                    try { metadata.release(); } catch (Exception ignored) {}
+                }
+                TdApi.InputMessageVideo video = new TdApi.InputMessageVideo();
+                video.video = new TdApi.InputFileLocal(chosenFile.getAbsolutePath());
+                video.thumbnail = null;
+                video.addedStickerFileIds = new int[0];
+                video.duration = duration;
+                video.width = width;
+                video.height = height;
+                video.supportsStreaming = true;
+                video.caption = null;
+                content = video;
+                log("Sending as Telegram video (" + duration + "s, " + width + "x" + height + ").");
+            } else {
+                TdApi.InputDocument document = new TdApi.InputDocument(
+                    new TdApi.InputFileLocal(chosenFile.getAbsolutePath()), null, false);
+                content = new TdApi.InputMessageDocument(document, null);
+                log("Selected file is not a recognized video extension; sending as document.");
+            }
             client.send(new TdApi.SendMessage(chat.id, null, null, null, null, content), response -> {
                 if(response instanceof TdApi.Error) {
                     TdApi.Error error = (TdApi.Error)response;
@@ -504,17 +535,28 @@ public class MainActivity extends Activity {
                 }
                 if(response instanceof TdApi.Message) {
                     TdApi.Message message = (TdApi.Message)response;
-                    if(message.content instanceof TdApi.MessageDocument) {
+                    if(message.content instanceof TdApi.MessageVideo) {
+                        uploadFileId = ((TdApi.MessageVideo)message.content).video.video.id;
+                        log("Telegram accepted the video. Tracking upload file ID " + uploadFileId + ".");
+                    } else if(message.content instanceof TdApi.MessageDocument) {
                         uploadFileId = ((TdApi.MessageDocument)message.content).document.document.id;
-                        log("Telegram accepted the message. Tracking upload file ID " + uploadFileId + ".");
+                        log("Telegram accepted the document. Tracking upload file ID " + uploadFileId + ".");
                     } else {
-                        log("Telegram accepted the send request; waiting for upload updates.");
+                        log("Telegram accepted the send request; response content: " + message.content.getClass().getSimpleName());
                     }
                 } else {
                     log("Send request response: " + response.getClass().getSimpleName());
                 }
             });
         });
+    }
+
+    private boolean isVideoFile(String name) {
+        String lower = name == null ? "" : name.toLowerCase(java.util.Locale.US);
+        return lower.endsWith(".mp4") || lower.endsWith(".m4v") || lower.endsWith(".mov")
+            || lower.endsWith(".mkv") || lower.endsWith(".webm") || lower.endsWith(".avi")
+            || lower.endsWith(".3gp") || lower.endsWith(".mpeg") || lower.endsWith(".mpg")
+            || lower.endsWith(".ts") || lower.endsWith(".mts") || lower.endsWith(".m2ts");
     }
 
     private String formatBytes(long bytes) {
