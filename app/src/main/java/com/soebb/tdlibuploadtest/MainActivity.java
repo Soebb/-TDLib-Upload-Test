@@ -870,13 +870,8 @@ public class MainActivity extends Activity {
         if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
             lower.endsWith(".webp") || lower.endsWith(".heic")) {
             TdApi.InputMessagePhoto message = new TdApi.InputMessagePhoto();
-            message.photo = new TdApi.InputFileLocal(file.getAbsolutePath());
-            message.thumbnail = null;
-            message.addedStickerFileIds = new int[0];
-            message.width = width;
-            message.height = height;
+            message.photo = new TdApi.InputPhotoLocal(file.getAbsolutePath());
             message.caption = caption;
-            message.ttl = 0;
             return message;
         }
         TdApi.InputDocument document = new TdApi.InputDocument(new TdApi.InputFileLocal(file.getAbsolutePath()), null, false);
