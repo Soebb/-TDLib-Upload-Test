@@ -653,6 +653,10 @@ public class MainActivity extends Activity {
         } else if(object instanceof TdApi.UpdateMessageSendSucceeded) {
             TdApi.UpdateMessageSendSucceeded succeeded = (TdApi.UpdateMessageSendSucceeded)object;
             TdApi.Message message = succeeded.message;
+            if (bulkUploadAmbiguous) {
+                log("Late Telegram upload success received after timeout. The message was kept; resolve the post using Review uncertain uploads.");
+                return;
+            }
             uploadInProgress = false;
             if (!bulkUploadRunning) stopUploadForegroundService();
             runOnUiThread(() -> {
@@ -674,6 +678,10 @@ public class MainActivity extends Activity {
             }
         } else if(object instanceof TdApi.UpdateMessageSendFailed) {
             TdApi.UpdateMessageSendFailed failed = (TdApi.UpdateMessageSendFailed)object;
+            if (bulkUploadAmbiguous) {
+                log("Late Telegram upload failure received after timeout: " + failed.error.message + ". The post remains in manual review; no retry was started.");
+                return;
+            }
             uploadInProgress = false;
             if (!bulkUploadRunning) clearUploadTracking();
             if (!bulkUploadRunning) stopUploadForegroundService();
