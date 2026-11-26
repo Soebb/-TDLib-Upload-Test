@@ -252,10 +252,16 @@ def resolve_review(database_path, url, uploaded):
     conn = _connect(database_path)
     try:
         status = 'done' if uploaded else 'pending'
-        conn.execute(
-            "UPDATE posts SET status=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='review'",
-            (status, url),
-        )
+        if uploaded:
+            conn.execute(
+                "UPDATE posts SET status='done', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='review'",
+                (url,),
+            )
+        else:
+            conn.execute(
+                "UPDATE posts SET status='pending', attempts=0, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='review'",
+                (url,),
+            )
         conn.commit()
     finally:
         conn.close()
