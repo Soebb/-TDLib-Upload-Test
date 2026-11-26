@@ -220,8 +220,8 @@ public class MainActivity extends Activity {
     private void setLoginUiVisible(boolean visible) {
         int v = visible ? View.VISIBLE : View.GONE;
         apiId.setVisibility(v); apiHash.setVisibility(v); phone.setVisibility(v);
-        if (visible && !waitingForEmailAddress) emailAddressInput.setVisibility(View.GONE);
-        if (visible && !waitingForEmailAddress) submitEmailAddressButton.setVisibility(View.GONE);
+        emailAddressInput.setVisibility(visible && waitingForEmailAddress ? View.VISIBLE : View.GONE);
+        submitEmailAddressButton.setVisibility(visible && waitingForEmailAddress ? View.VISIBLE : View.GONE);
         connectButton.setVisibility(v); code.setVisibility(v); submitCodeButton.setVisibility(v);
         codeInfoView.setVisibility(v); resendButton.setVisibility(v);
     }
@@ -495,6 +495,14 @@ public class MainActivity extends Activity {
                 waitingForPhoneNumber = false;
                 waitingForEmailAddress = false;
                 waitingForEmailCode = false;
+                runOnUiThread(() -> {
+                    emailAddressInput.setVisibility(View.GONE);
+                    submitEmailAddressButton.setVisibility(View.GONE);
+                    code.setHint("Telegram login code");
+                    submitCodeButton.setText("Submit code");
+                    code.setVisibility(View.VISIBLE);
+                    submitCodeButton.setVisibility(View.VISIBLE);
+                });
                 TdApi.AuthenticationCodeInfo info = ((TdApi.AuthorizationStateWaitCode)s).codeInfo;
                 showCodeInfo(info);
                 codeInfoView.setVisibility(View.VISIBLE);
