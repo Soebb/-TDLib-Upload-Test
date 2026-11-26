@@ -46,6 +46,8 @@ public class MainActivity extends Activity {
     private int uploadFileId = 0;
     private long uploadTotalBytes = 0;
     private int lastLoggedProgressStep = -1;
+    // No-progress timeout for a single Telegram file upload. Set to 0 to disable.
+    private static final long UPLOAD_STALL_TIMEOUT_MS = 120_000L;
     private final HashMap<Integer, UploadProgressTrack> uploadTracksById = new HashMap<>();
     private final HashMap<String, UploadProgressTrack> uploadTracksByPath = new HashMap<>();
     private final HashMap<Long, UploadProgressTrack> uploadTracksByMessageId = new HashMap<>();
@@ -54,6 +56,12 @@ public class MainActivity extends Activity {
         final String name;
         final long totalBytes;
         int lastLoggedStep = 0;
+        long lastUploadedBytes = 0L;
+        long messageId = 0L;
+        long chatId = 0L;
+        Runnable timeoutRunnable;
+        boolean timeoutTriggered = false;
+        boolean finished = false;
         UploadProgressTrack(File file) { name = file.getName(); totalBytes = Math.max(1L, file.length()); }
     }
     private Client client;
@@ -593,6 +601,7 @@ public class MainActivity extends Activity {
         } else if(object instanceof TdApi.UpdateMessageSendFailed) {
             TdApi.UpdateMessageSendFailed failed = (TdApi.UpdateMessageSendFailed)object;
             uploadInProgress = false;
+            if (!bulkUploadRunning) clearUploadTracking();
             if (!bulkUploadRunning) stopUploadForegroundService();
             runOnUiThread(() -> {
                 uploadProgress.setIndeterminate(false);
@@ -610,6 +619,94 @@ public class MainActivity extends Activity {
             synchronized (uploadTracksByPath) { uploadTracksByPath.put(file.getCanonicalPath(), track); }
         } catch (IOException ignored) {
             synchronized (uploadTracksByPath) { uploadTracksByPath.put(file.getAbsolutePath(), track); }
+        }
+    }
+
+    private void armUploadStallTimeout(UploadProgressTrack track) {
+        if (track == null || UPLOAD_STALL_TIMEOUT_MS <= 0L) return;
+        synchronized (track) {
+            if (track.finished || track.timeoutTriggered) return;
+            if (track.timeoutRunnable != null) mainHandler.removeCallbacks(track.timeoutRunnable);
+            track.timeoutRunnable = () -> handleUploadStallTimeout(track);
+            mainHandler.postDelayed(track.timeoutRunnable, UPLOAD_STALL_TIMEOUT_MS);
+        }
+    }
+
+    private void removeUploadTrack(UploadProgressTrack track) {
+        if (track == null) return;
+        synchronized (track) {
+            track.finished = true;
+            if (track.timeoutRunnable != null) mainHandler.removeCallbacks(track.timeoutRunnable);
+            track.timeoutRunnable = null;
+        }
+        synchronized (uploadTracksById) { uploadTracksById.values().remove(track); }
+        synchronized (uploadTracksByPath) { uploadTracksByPath.values().remove(track); }
+        synchronized (uploadTracksByMessageId) { uploadTracksByMessageId.values().remove(track); }
+    }
+
+    private void cancelPendingUploadMessage(UploadProgressTrack track) {
+        if (track == null || client == null || track.messageId == 0L || track.chatId == 0L) return;
+        final long messageId = track.messageId;
+        final long chatId = track.chatId;
+        log("Requesting cancellation of stalled Telegram message " + messageId + ".");
+        client.send(new TdApi.DeleteMessages(chatId, new long[]{messageId}, true), response -> {
+            if (response instanceof TdApi.Error) {
+                TdApi.Error error = (TdApi.Error) response;
+                log("Could not cancel stalled message " + messageId + ": " + error.message);
+            } else {
+                log("Cancellation request accepted for stalled message " + messageId + ".");
+            }
+        });
+    }
+
+    private void cancelTrackedBulkMessages() {
+        ArrayList<UploadProgressTrack> tracks = new ArrayList<>();
+        synchronized (uploadTracksByMessageId) {
+            for (UploadProgressTrack track : uploadTracksByMessageId.values()) {
+                if (!tracks.contains(track)) tracks.add(track);
+            }
+        }
+        for (UploadProgressTrack track : tracks) cancelPendingUploadMessage(track);
+    }
+
+    private void clearUploadTracking() {
+        ArrayList<UploadProgressTrack> tracks = new ArrayList<>();
+        synchronized (uploadTracksByPath) {
+            for (UploadProgressTrack track : uploadTracksByPath.values()) {
+                if (!tracks.contains(track)) tracks.add(track);
+            }
+        }
+        for (UploadProgressTrack track : tracks) removeUploadTrack(track);
+        synchronized (uploadTracksById) { uploadTracksById.clear(); }
+        synchronized (uploadTracksByPath) { uploadTracksByPath.clear(); }
+        synchronized (uploadTracksByMessageId) { uploadTracksByMessageId.clear(); }
+        synchronized (completedUploadMessageIds) { completedUploadMessageIds.clear(); }
+    }
+
+    private void handleUploadStallTimeout(UploadProgressTrack track) {
+        synchronized (track) {
+            if (track.finished || track.timeoutTriggered) return;
+            track.timeoutTriggered = true;
+            track.timeoutRunnable = null;
+        }
+        String reason = "No upload progress for " + (UPLOAD_STALL_TIMEOUT_MS / 1000L)
+            + " seconds; file upload stalled: " + track.name;
+        log("UPLOAD TIMEOUT. " + reason);
+        if (bulkUploadRunning) {
+            cancelTrackedBulkMessages();
+            clearUploadTracking();
+            failCurrentBulkPost(reason);
+        } else {
+            cancelPendingUploadMessage(track);
+            clearUploadTracking();
+            uploadInProgress = false;
+            stopUploadForegroundService();
+            runOnUiThread(() -> {
+                uploadProgress.setIndeterminate(false);
+                uploadProgressText.setText("Upload timed out: no progress for "
+                    + (UPLOAD_STALL_TIMEOUT_MS / 1000L) + " seconds.");
+                uploadButton.setEnabled(true);
+            });
         }
     }
 
@@ -640,11 +737,14 @@ public class MainActivity extends Activity {
             synchronized (uploadTracksByPath) { track = uploadTracksByPath.get(localFile.getAbsolutePath()); }
         }
         if (track != null) {
+            track.messageId = message.id;
+            track.chatId = message.chatId;
             synchronized (uploadTracksById) { uploadTracksById.put(fileId, track); }
             synchronized (uploadTracksByMessageId) { uploadTracksByMessageId.put(message.id, track); }
             boolean completed;
             synchronized (completedUploadMessageIds) { completed = completedUploadMessageIds.remove(message.id); }
             if (completed) finishUploadTrack(track);
+            else armUploadStallTimeout(track);
         }
     }
 
@@ -658,6 +758,13 @@ public class MainActivity extends Activity {
         if (track == null) return;
         long total = track.totalBytes > 1 ? track.totalBytes : Math.max(1L, file.size);
         long sent = Math.max(0L, file.remote.uploadedSize);
+        boolean madeProgress;
+        synchronized (track) {
+            if (track.finished || track.timeoutTriggered) return;
+            madeProgress = sent > track.lastUploadedBytes;
+            if (madeProgress) track.lastUploadedBytes = sent;
+        }
+        if (madeProgress) armUploadStallTimeout(track);
         int percent = (int) Math.min(100L, sent * 100L / total);
         int step = percent / 10;
         if (step > track.lastLoggedStep) {
@@ -684,9 +791,7 @@ public class MainActivity extends Activity {
 
     private void finishUploadTrack(UploadProgressTrack track) {
         if (track == null) return;
-        synchronized (uploadTracksById) { uploadTracksById.values().remove(track); }
-        synchronized (uploadTracksByPath) { uploadTracksByPath.values().remove(track); }
-        synchronized (uploadTracksByMessageId) { uploadTracksByMessageId.values().remove(track); }
+        removeUploadTrack(track);
         if (track.lastLoggedStep < 10) {
             for (int completedStep = track.lastLoggedStep + 1; completedStep <= 10; completedStep++)
                 log("Upload [" + track.name + "]: " + (completedStep * 10) + "%");
@@ -1013,6 +1118,7 @@ public class MainActivity extends Activity {
                         uploadProgress.setIndeterminate(false);
                         uploadProgressText.setText("Send request failed.");
                     });
+                    clearUploadTracking();
                     log("SEND MESSAGE FAILED. Error " + error.code + ": " + error.message);
                     return;
                 }
@@ -1298,6 +1404,7 @@ public class MainActivity extends Activity {
         synchronized (bulkAwaitingMessageIds) {
             bulkAwaitingMessageIds.clear(); bulkSucceededBeforeResponse.clear(); bulkChunkResponseReceived = false;
         }
+        clearUploadTracking();
         io.execute(() -> {
             try {
                 JSONObject retry = new JSONObject(bulkEngine.retryOrFail(bulkDatabasePath, failedUrl, reason));
