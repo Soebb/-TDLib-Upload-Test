@@ -48,6 +48,7 @@ public class MainActivity extends Activity {
     private int lastLoggedProgressStep = -1;
     private final HashMap<Integer, UploadProgressTrack> uploadTracksById = new HashMap<>();
     private final HashMap<String, UploadProgressTrack> uploadTracksByPath = new HashMap<>();
+    private final HashSet<Integer> completedUploadFileIds = new HashSet<>();
     private static final class UploadProgressTrack {
         final String name;
         final long totalBytes;
@@ -638,7 +639,12 @@ public class MainActivity extends Activity {
         } catch (IOException ignored) {
             synchronized (uploadTracksByPath) { track = uploadTracksByPath.get(localFile.getAbsolutePath()); }
         }
-        if (track != null) synchronized (uploadTracksById) { uploadTracksById.put(fileId, track); }
+        if (track != null) {
+            synchronized (uploadTracksById) { uploadTracksById.put(fileId, track); }
+            boolean completed;
+            synchronized (completedUploadFileIds) { completed = completedUploadFileIds.remove(fileId); }
+            if (completed) finishUploadTrack(fileId);
+        }
     }
 
     private void handleUploadFileUpdate(TdApi.File file) {
@@ -668,6 +674,13 @@ public class MainActivity extends Activity {
     private void markUploadMessageComplete(TdApi.Message message) {
         int fileId = uploadFileIdForMessage(message);
         if (fileId == 0) return;
+        boolean found;
+        synchronized (uploadTracksById) { found = uploadTracksById.containsKey(fileId); }
+        if (found) finishUploadTrack(fileId);
+        else synchronized (completedUploadFileIds) { completedUploadFileIds.add(fileId); }
+    }
+
+    private void finishUploadTrack(int fileId) {
         UploadProgressTrack track;
         synchronized (uploadTracksById) { track = uploadTracksById.remove(fileId); }
         if (track != null && track.lastLoggedStep < 10) {
