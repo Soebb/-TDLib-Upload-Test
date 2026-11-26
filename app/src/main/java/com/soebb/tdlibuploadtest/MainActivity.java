@@ -1597,6 +1597,7 @@ public class MainActivity extends Activity {
 
     private void finishBulkUpload(String message) {
         bulkUploadRunning = false;
+        bulkUploadAmbiguous = false;
         bulkPostLoadInProgress = false;
         bulkDownloadInProgress = false;
         bulkChunkInFlight = false;
