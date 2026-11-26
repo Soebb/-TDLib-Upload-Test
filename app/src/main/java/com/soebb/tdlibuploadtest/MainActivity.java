@@ -30,7 +30,7 @@ public class MainActivity extends Activity {
     private Button submitEmailAddressButton;
     private TextView status, selected, codeInfoView, accountState, queueSummary;
     private Spinner databaseSpinner;
-    private Button deleteDatabaseButton, deleteCompletedDatabasesButton;
+    private Button deleteDatabaseButton, deleteCompletedDatabasesButton, reviewUncertainButton;
     private final ArrayList<BatchItem> successfulDatabaseItems = new ArrayList<>();
     private final ArrayList<BatchItem> databaseItems = new ArrayList<>();
     private volatile String selectedDatabasePath = "";
@@ -52,7 +52,6 @@ public class MainActivity extends Activity {
     private final HashMap<String, UploadProgressTrack> uploadTracksByPath = new HashMap<>();
     private final HashMap<Long, UploadProgressTrack> uploadTracksByMessageId = new HashMap<>();
     private final HashSet<Long> completedUploadMessageIds = new HashSet<>();
-    private final HashSet<Long> timedOutUploadMessageIds = new HashSet<>();
     private static final class UploadProgressTrack {
         final String name;
         final long totalBytes;
@@ -176,6 +175,8 @@ public class MainActivity extends Activity {
         deleteDatabaseButton.setOnClickListener(v -> deleteSelectedDatabase());
         databaseRow.addView(deleteDatabaseButton);
         deleteCompletedDatabasesButton = button(root, "Delete completed databases (0)", v -> showSuccessfulDatabasesForDeletion());
+        reviewUncertainButton = button(root, "Review uncertain uploads (0)", v -> showUncertainPostsForReview());
+        reviewUncertainButton.setEnabled(false);
         root.addView(databaseRow);
         queueSummary = new TextView(this);
         queueSummary.setText("No link databases yet. Paste links or import a TXT file.");
@@ -306,14 +307,14 @@ public class MainActivity extends Activity {
 
     private static final class BatchItem {
         final String path, filename, name;
-        final int total, done, failed, pending, processing;
+        final int total, done, failed, pending, processing, review;
         final boolean processed, complete;
         BatchItem(JSONObject o) {
             path=o.optString("path"); filename=o.optString("filename"); name=o.optString("name", filename);
             total=o.optInt("total"); done=o.optInt("done"); failed=o.optInt("failed");
-            pending=o.optInt("pending"); processing=o.optInt("processing"); processed=o.optBoolean("processed"); complete=o.optBoolean("complete");
+            pending=o.optInt("pending"); processing=o.optInt("processing"); review=o.optInt("review"); processed=o.optBoolean("processed"); complete=o.optBoolean("complete");
         }
-        String label() { return name + "\nTotal: " + total + "  •  Done: " + done + "  •  Failed: " + failed; }
+        String label() { return name + "\nTotal: " + total + "  •  Done: " + done + "  •  Failed: " + failed + "  •  Review: " + review; }
     }
 
     private void refreshBatchListOnIo(String preferredPath) {
@@ -368,14 +369,69 @@ public class MainActivity extends Activity {
     private void showSelectedDatabase(BatchItem item) {
         queueSummary.setText("Database: " + item.name + "\nTotal links: " + item.total +
             "  •  Completed: " + item.done + "  •  Failed: " + item.failed +
-            "  •  Pending: " + item.pending + "  •  Processing: " + item.processing);
+            "  •  Pending: " + item.pending + "  •  Processing: " + item.processing +
+            "  •  Needs review: " + item.review);
         deleteDatabaseButton.setVisibility(item.processed ? View.VISIBLE : View.GONE);
+        reviewUncertainButton.setText("Review uncertain uploads (" + item.review + ")");
+        reviewUncertainButton.setEnabled(!bulkUploadRunning && item.review > 0);
         uploadButton.setEnabled(!bulkUploadRunning);
     }
 
     private boolean isSelectedDatabaseComplete() {
         for (BatchItem item : databaseItems) if (item.path.equals(selectedDatabasePath)) return item.complete;
         return false;
+    }
+
+    private void showUncertainPostsForReview() {
+        if (bulkUploadRunning || selectedDatabasePath.isEmpty()) return;
+        final String path = selectedDatabasePath;
+        io.execute(() -> {
+            try {
+                JSONArray posts = new JSONArray(bulkEngine.reviewPosts(path));
+                if (posts.length() == 0) {
+                    log("This database has no uploads awaiting review.");
+                    refreshBatchListOnIo(path);
+                    return;
+                }
+                String[] labels = new String[posts.length()];
+                for (int i = 0; i < posts.length(); i++) {
+                    JSONObject post = posts.getJSONObject(i);
+                    labels[i] = post.optString("url") + "\\n" + post.optString("error");
+                }
+                runOnUiThread(() -> new android.app.AlertDialog.Builder(this)
+                    .setTitle("Uploads needing review")
+                    .setItems(labels, (dialog, which) -> {
+                        try {
+                            JSONObject post = posts.getJSONObject(which);
+                            String url = post.optString("url");
+                            new android.app.AlertDialog.Builder(this)
+                                .setTitle("Check this Instagram post")
+                                .setMessage("The app cannot confirm whether Telegram accepted every media item. Open your Telegram channel and inspect this post before choosing.\\n\\n" + url)
+                                .setPositiveButton("Mark as uploaded", (d, w) -> resolveUncertainPost(path, url, true))
+                                .setNeutralButton("Retry upload", (d, w) -> new android.app.AlertDialog.Builder(this)
+                                    .setTitle("Retry may create duplicates")
+                                    .setMessage("Only retry if you checked the channel and confirmed that none of this post's media was uploaded. Any media that already reached Telegram may be sent again.")
+                                    .setNegativeButton("Cancel", null)
+                                    .setPositiveButton("Retry anyway", (d2, w2) -> resolveUncertainPost(path, url, false))
+                                    .show())
+                                .setNegativeButton("Later", null)
+                                .show();
+                        } catch (Exception error) { log("Could not open uncertain post: " + error.getMessage()); }
+                    })
+                    .setNegativeButton("Close", null)
+                    .show());
+            } catch (Throwable error) { log("Could not load uploads needing review: " + error.getMessage()); }
+        });
+    }
+
+    private void resolveUncertainPost(String path, String url, boolean uploaded) {
+        io.execute(() -> {
+            try {
+                bulkEngine.resolveReview(path, url, uploaded);
+                log(uploaded ? "Uncertain post marked as uploaded: " + url : "Uncertain post returned to pending for a user-approved retry: " + url);
+                refreshBatchListOnIo(path);
+            } catch (Throwable error) { log("Could not resolve uncertain post: " + error.getMessage()); }
+        });
     }
 
     private void showSuccessfulDatabasesForDeletion() {
@@ -586,19 +642,6 @@ public class MainActivity extends Activity {
         } else if(object instanceof TdApi.UpdateMessageSendSucceeded) {
             TdApi.UpdateMessageSendSucceeded succeeded = (TdApi.UpdateMessageSendSucceeded)object;
             TdApi.Message message = succeeded.message;
-            boolean wasTimedOut;
-            synchronized (timedOutUploadMessageIds) { wasTimedOut = timedOutUploadMessageIds.remove(succeeded.oldMessageId); }
-            if (wasTimedOut) {
-                log("A timed-out upload completed late. Deleting the late Telegram message to prevent a duplicate.");
-                if (client != null && message != null)
-                    client.send(new TdApi.DeleteMessages(message.chatId, new long[]{message.id}, true), response -> {
-                        if (response instanceof TdApi.Error)
-                            log("Could not delete late completed message " + message.id + ": " + ((TdApi.Error) response).message);
-                        else
-                            log("Late completed message " + message.id + " was deleted.");
-                    });
-                return;
-            }
             uploadInProgress = false;
             if (!bulkUploadRunning) stopUploadForegroundService();
             runOnUiThread(() -> {
@@ -620,12 +663,6 @@ public class MainActivity extends Activity {
             }
         } else if(object instanceof TdApi.UpdateMessageSendFailed) {
             TdApi.UpdateMessageSendFailed failed = (TdApi.UpdateMessageSendFailed)object;
-            boolean wasTimedOut;
-            synchronized (timedOutUploadMessageIds) { wasTimedOut = timedOutUploadMessageIds.remove(failed.oldMessageId); }
-            if (wasTimedOut) {
-                log("Timed-out upload later reported failure: " + failed.error.message);
-                return;
-            }
             uploadInProgress = false;
             if (!bulkUploadRunning) clearUploadTracking();
             if (!bulkUploadRunning) stopUploadForegroundService();
@@ -680,32 +717,6 @@ public class MainActivity extends Activity {
         synchronized (uploadTracksByMessageId) { uploadTracksByMessageId.values().remove(track); }
     }
 
-    private void cancelPendingUploadMessage(UploadProgressTrack track) {
-        if (track == null || client == null || track.messageId == 0L || track.chatId == 0L) return;
-        final long messageId = track.messageId;
-        final long chatId = track.chatId;
-        synchronized (timedOutUploadMessageIds) { timedOutUploadMessageIds.add(messageId); }
-        log("Requesting cancellation of stalled Telegram message " + messageId + ".");
-        client.send(new TdApi.DeleteMessages(chatId, new long[]{messageId}, true), response -> {
-            if (response instanceof TdApi.Error) {
-                TdApi.Error error = (TdApi.Error) response;
-                log("Could not cancel stalled message " + messageId + ": " + error.message);
-            } else {
-                log("Cancellation request accepted for stalled message " + messageId + ".");
-            }
-        });
-    }
-
-    private void cancelTrackedBulkMessages() {
-        ArrayList<UploadProgressTrack> tracks = new ArrayList<>();
-        synchronized (uploadTracksByMessageId) {
-            for (UploadProgressTrack track : uploadTracksByMessageId.values()) {
-                if (!tracks.contains(track)) tracks.add(track);
-            }
-        }
-        for (UploadProgressTrack track : tracks) cancelPendingUploadMessage(track);
-    }
-
     private void clearUploadTracking() {
         ArrayList<UploadProgressTrack> tracks = new ArrayList<>();
         synchronized (uploadTracksByPath) {
@@ -730,18 +741,33 @@ public class MainActivity extends Activity {
             + " seconds; file upload stalled: " + track.name;
         log("UPLOAD TIMEOUT. " + reason);
         if (bulkUploadRunning) {
-            cancelTrackedBulkMessages();
+            final String uncertainUrl = bulkCurrentUrl;
+            final String uncertainDatabase = bulkDatabasePath;
             clearUploadTracking();
-            failCurrentBulkPost(reason);
+            synchronized (bulkAwaitingMessageIds) {
+                bulkAwaitingMessageIds.clear();
+                bulkSucceededBeforeResponse.clear();
+                bulkChunkResponseReceived = false;
+            }
+            bulkChunkInFlight = false;
+            io.execute(() -> {
+                try {
+                    bulkEngine.markReview(uncertainDatabase, uncertainUrl, reason + " Telegram may already have accepted some or all media. Check the channel before retrying.");
+                    refreshBatchListOnIo(uncertainDatabase);
+                    finishBulkUpload("Upload result is uncertain. No Telegram message was deleted and no automatic retry was started. Check the channel, then use Review uncertain uploads.");
+                } catch (Throwable error) {
+                    log("Could not save uncertain upload state: " + error.getMessage() + ". Automatic retry was intentionally skipped.");
+                    finishBulkUpload("Upload result is uncertain. No message was deleted and no retry was started. Database status could not be saved; do not retry until you inspect the channel.");
+                }
+            });
         } else {
-            cancelPendingUploadMessage(track);
             clearUploadTracking();
             uploadInProgress = false;
             stopUploadForegroundService();
             runOnUiThread(() -> {
                 uploadProgress.setIndeterminate(false);
-                uploadProgressText.setText("Upload timed out: no progress for "
-                    + (UPLOAD_STALL_TIMEOUT_MS / 1000L) + " seconds.");
+                uploadProgressText.setText("Upload status uncertain: no progress for "
+                    + (UPLOAD_STALL_TIMEOUT_MS / 1000L) + " seconds. Check Telegram before retrying.");
                 uploadButton.setEnabled(true);
             });
         }
