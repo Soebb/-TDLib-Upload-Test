@@ -20,6 +20,7 @@ import java.io.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.ArrayList;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -45,6 +46,14 @@ public class MainActivity extends Activity {
     private int uploadFileId = 0;
     private long uploadTotalBytes = 0;
     private int lastLoggedProgressStep = -1;
+    private final HashMap<Integer, UploadProgressTrack> uploadTracksById = new HashMap<>();
+    private final HashMap<String, UploadProgressTrack> uploadTracksByPath = new HashMap<>();
+    private static final class UploadProgressTrack {
+        final String name;
+        final long totalBytes;
+        int lastLoggedStep = 0;
+        UploadProgressTrack(File file) { name = file.getName(); totalBytes = Math.max(1L, file.length()); }
+    }
     private Client client;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int resendSecondsRemaining = 0;
@@ -467,7 +476,6 @@ public class MainActivity extends Activity {
     private void onUpdate(TdApi.Object object) {
         if(object instanceof TdApi.UpdateAuthorizationState) {
             TdApi.AuthorizationState s=((TdApi.UpdateAuthorizationState)object).authorizationState;
-            log("AUTH STATE UPDATE: " + s.getClass().getSimpleName() + " | " + s.toString());
             if(s instanceof TdApi.AuthorizationStateWaitTdlibParameters) {
                 TdApi.SetTdlibParameters p=new TdApi.SetTdlibParameters();
                 p.databaseDirectory=new File(getFilesDir(),"tdlib").getAbsolutePath();
@@ -561,26 +569,9 @@ public class MainActivity extends Activity {
                 setAccountState("Session closed");
             } else {
                 setAccountState(s.getClass().getSimpleName());
-                log("Unhandled authorization state: " + s.getClass().getSimpleName() + " | " + s.toString());
             }
         } else if(object instanceof TdApi.UpdateFile) {
-            TdApi.File file = ((TdApi.UpdateFile)object).file;
-            if(uploadInProgress && uploadFileId != 0 && file.id == uploadFileId && file.remote != null) {
-                long total = uploadTotalBytes > 0 ? uploadTotalBytes : Math.max(1L, file.size);
-                long sent = Math.max(0L, file.remote.uploadedSize);
-                int percent = (int)Math.min(100L, sent * 100L / Math.max(1L, total));
-                runOnUiThread(() -> {
-                    uploadProgress.setVisibility(View.VISIBLE);
-                    uploadProgress.setIndeterminate(false);
-                    uploadProgress.setProgress(percent);
-                    uploadProgressText.setText("Uploading " + percent + "%");
-                });
-                int progressStep = percent / 10;
-                if (progressStep != lastLoggedProgressStep && progressStep > 0) {
-                    lastLoggedProgressStep = progressStep;
-                    log("Upload: " + (progressStep * 10) + "%");
-                }
-            }
+            handleUploadFileUpdate(((TdApi.UpdateFile)object).file);
         } else if(object instanceof TdApi.UpdateMessageSendSucceeded) {
             TdApi.Message message = ((TdApi.UpdateMessageSendSucceeded)object).message;
             uploadInProgress = false;
@@ -591,6 +582,7 @@ public class MainActivity extends Activity {
                 uploadButton.setEnabled(!bulkUploadRunning);
             });
             log("UPLOAD SUCCESS. Telegram message ID: " + message.id);
+            markUploadMessageComplete(message);
             if (bulkUploadRunning) {
                 synchronized (bulkAwaitingMessageIds) {
                     if (!bulkAwaitingMessageIds.remove(message.id)) bulkSucceededBeforeResponse.add(message.id);
@@ -610,17 +602,87 @@ public class MainActivity extends Activity {
             if (bulkUploadRunning) failCurrentBulkPost("TDLib upload failed: " + failed.error.message);
         }
     }
-    private void onResult(TdApi.Object o) {
-        if (o == null) {
-            log("TDLib RESULT: null response.");
-            return;
+    private void trackUploadFile(File file) {
+        if (file == null) return;
+        UploadProgressTrack track = new UploadProgressTrack(file);
+        try {
+            synchronized (uploadTracksByPath) { uploadTracksByPath.put(file.getCanonicalPath(), track); }
+        } catch (IOException ignored) {
+            synchronized (uploadTracksByPath) { uploadTracksByPath.put(file.getAbsolutePath(), track); }
         }
-        log("TDLib RESULT: " + o.getClass().getSimpleName() + " | " + o.toString());
+    }
+
+    private int uploadFileIdForMessage(TdApi.Message message) {
+        if (message == null || message.content == null) return 0;
+        if (message.content instanceof TdApi.MessageVideo)
+            return ((TdApi.MessageVideo) message.content).video.video.id;
+        if (message.content instanceof TdApi.MessageDocument)
+            return ((TdApi.MessageDocument) message.content).document.document.id;
+        if (message.content instanceof TdApi.MessagePhoto) {
+            TdApi.PhotoSize[] sizes = ((TdApi.MessagePhoto) message.content).photo.sizes;
+            TdApi.File largest = null;
+            for (TdApi.PhotoSize size : sizes)
+                if (size.photo != null && (largest == null || size.photo.size > largest.size)) largest = size.photo;
+            return largest == null ? 0 : largest.id;
+        }
+        return 0;
+    }
+
+    private void trackMessageUpload(TdApi.Message message, File localFile) {
+        if (message == null || localFile == null) return;
+        int fileId = uploadFileIdForMessage(message);
+        if (fileId == 0) return;
+        UploadProgressTrack track;
+        try {
+            synchronized (uploadTracksByPath) { track = uploadTracksByPath.get(localFile.getCanonicalPath()); }
+        } catch (IOException ignored) {
+            synchronized (uploadTracksByPath) { track = uploadTracksByPath.get(localFile.getAbsolutePath()); }
+        }
+        if (track != null) synchronized (uploadTracksById) { uploadTracksById.put(fileId, track); }
+    }
+
+    private void handleUploadFileUpdate(TdApi.File file) {
+        if (file == null || file.remote == null) return;
+        UploadProgressTrack track;
+        synchronized (uploadTracksById) { track = uploadTracksById.get(file.id); }
+        if (track == null && file.local != null && file.local.path != null) {
+            synchronized (uploadTracksByPath) { track = uploadTracksByPath.get(file.local.path); }
+        }
+        if (track == null) return;
+        long total = track.totalBytes > 1 ? track.totalBytes : Math.max(1L, file.size);
+        long sent = Math.max(0L, file.remote.uploadedSize);
+        int percent = (int) Math.min(100L, sent * 100L / total);
+        int step = percent / 10;
+        if (step > track.lastLoggedStep) {
+            track.lastLoggedStep = step;
+            if (step > 0) log("Upload [" + track.name + "]: " + (step * 10) + "%");
+        }
+        runOnUiThread(() -> {
+            uploadProgress.setVisibility(View.VISIBLE);
+            uploadProgress.setIndeterminate(false);
+            uploadProgress.setProgress(percent);
+            uploadProgressText.setText("Uploading " + track.name + ": " + percent + "%");
+        });
+    }
+
+    private void markUploadMessageComplete(TdApi.Message message) {
+        int fileId = uploadFileIdForMessage(message);
+        if (fileId == 0) return;
+        UploadProgressTrack track;
+        synchronized (uploadTracksById) { track = uploadTracksById.remove(fileId); }
+        if (track != null && track.lastLoggedStep < 10) {
+            track.lastLoggedStep = 10;
+            log("Upload [" + track.name + "]: 100%");
+        }
+    }
+
+    private void onResult(TdApi.Object o) {
+        if (o == null) return;
         if(o instanceof TdApi.Error) {
             phoneSubmitted=false;
             loginRequested=false;
             TdApi.Error error = (TdApi.Error)o;
-            log("TELEGRAM ERROR. Code: " + error.code + " | Message: " + error.message);
+            log("TDLib error: " + error.message);
         } else if(o instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
             waitingForPhoneNumber = true;
             setAccountState("Not signed in");
@@ -857,6 +919,7 @@ public class MainActivity extends Activity {
             uploadProgress.setProgress(0);
             uploadProgressText.setText("Preparing upload...");
         });
+        trackUploadFile(chosenFile);
         log("Starting upload workflow. File: " + chosenFile.getName() + ", size: " + formatBytes(uploadTotalBytes));
         log("Resolving public channel @" + username + "...");
         client.send(new TdApi.SearchPublicChat(username), result -> {
@@ -937,6 +1000,7 @@ public class MainActivity extends Activity {
                 }
                 if(response instanceof TdApi.Message) {
                     TdApi.Message message = (TdApi.Message)response;
+                    trackMessageUpload(message, chosenFile);
                     if(message.content instanceof TdApi.MessageVideo) {
                         uploadFileId = ((TdApi.MessageVideo)message.content).video.video.id;
                         log("Telegram accepted the video. Tracking upload file ID " + uploadFileId + ".");
@@ -1031,7 +1095,8 @@ public class MainActivity extends Activity {
                 log("Processing Instagram post: " + url);
                 bulkDownloadInProgress = true;
                 bulkPostLoadInProgress = false;
-                JSONObject data = new JSONObject(bulkEngine.downloadPost(url));
+                JSONObject data = new JSONObject(bulkEngine.downloadPost(url, (fileName, percent) ->
+                    log("Download [" + fileName + "]: " + percent + "%")));
                 bulkDownloadInProgress = false;
                 if (bulkStopRequested) { stopCurrentPostAndFinish(); return; }
                 bulkCurrentFiles = data.getJSONArray("files");
@@ -1090,6 +1155,7 @@ public class MainActivity extends Activity {
                 File mediaFile = new File(bulkCurrentFiles.getString(fileIndex));
                 if (!mediaFile.isFile()) throw new FileNotFoundException(mediaFile.getAbsolutePath());
                 totalBytes += mediaFile.length();
+                trackUploadFile(mediaFile);
                 String caption = (chunkNumber == 0 && i == 0) ? bulkCurrentCaption : "";
                 contents[i] = buildBulkContent(mediaFile, items.getJSONObject(i), caption);
             }
@@ -1119,10 +1185,16 @@ public class MainActivity extends Activity {
                 }
                 synchronized (bulkAwaitingMessageIds) {
                     if (response instanceof TdApi.Message) {
-                        long id = ((TdApi.Message) response).id;
+                        TdApi.Message sent = (TdApi.Message) response;
+                        long id = sent.id;
+                        trackMessageUpload(sent, new File(bulkCurrentFiles.getString(chunkNumber * 10)));
                         if (!bulkSucceededBeforeResponse.remove(id)) bulkAwaitingMessageIds.add(id);
                     } else if (response instanceof TdApi.Messages) {
-                        for (TdApi.Message sent : ((TdApi.Messages) response).messages) {
+                        TdApi.Message[] sentMessages = ((TdApi.Messages) response).messages;
+                        for (int messageIndex = 0; messageIndex < sentMessages.length; messageIndex++) {
+                            TdApi.Message sent = sentMessages[messageIndex];
+                            int fileIndex = chunkNumber * 10 + messageIndex;
+                            if (fileIndex < bulkCurrentFiles.length()) trackMessageUpload(sent, new File(bulkCurrentFiles.getString(fileIndex)));
                             if (!bulkSucceededBeforeResponse.remove(sent.id)) bulkAwaitingMessageIds.add(sent.id);
                         }
                     } else {
