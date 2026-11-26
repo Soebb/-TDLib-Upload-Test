@@ -25,7 +25,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
-    private EditText apiId, apiHash, phone, code, channel, captionInput, linksInput;
+    private EditText apiId, apiHash, phone, emailAddressInput, code, channel, captionInput, linksInput;
+    private Button submitEmailAddressButton;
     private TextView status, selected, codeInfoView, accountState, queueSummary;
     private Spinner databaseSpinner;
     private Button deleteDatabaseButton, deleteCompletedDatabasesButton;
@@ -55,6 +56,8 @@ public class MainActivity extends Activity {
     private String pendingApiHash = "";
     private boolean phoneSubmitted = false;
     private volatile boolean waitingForPhoneNumber = false;
+    private volatile boolean waitingForEmailAddress = false;
+    private volatile boolean waitingForEmailCode = false;
     private boolean loginRequested = false;
     private SharedPreferences preferences;
     private PythonBulkEngine bulkEngine;
@@ -106,6 +109,10 @@ public class MainActivity extends Activity {
         apiId = field(root,"API ID (from my.telegram.org)");
         apiHash = field(root,"API Hash");
         phone = field(root,"Phone number (international format)");
+        emailAddressInput = field(root,"Email address (only if Telegram asks)");
+        emailAddressInput.setVisibility(View.GONE);
+        submitEmailAddressButton = button(root,"Submit email address",v -> submitEmailAddress());
+        submitEmailAddressButton.setVisibility(View.GONE);
         connectButton = button(root,"Connect / Send login code",v -> startLogin());
         code = field(root,"Telegram login code");
         submitCodeButton = button(root,"Submit code",v -> submitCode());
@@ -213,6 +220,8 @@ public class MainActivity extends Activity {
     private void setLoginUiVisible(boolean visible) {
         int v = visible ? View.VISIBLE : View.GONE;
         apiId.setVisibility(v); apiHash.setVisibility(v); phone.setVisibility(v);
+        if (visible && !waitingForEmailAddress) emailAddressInput.setVisibility(View.GONE);
+        if (visible && !waitingForEmailAddress) submitEmailAddressButton.setVisibility(View.GONE);
         connectButton.setVisibility(v); code.setVisibility(v); submitCodeButton.setVisibility(v);
         codeInfoView.setVisibility(v); resendButton.setVisibility(v);
     }
@@ -230,6 +239,7 @@ public class MainActivity extends Activity {
         apiId.setText(preferences.getString("api_id", ""));
         apiHash.setText(preferences.getString("api_hash", ""));
         phone.setText(preferences.getString("phone", ""));
+        emailAddressInput.setText(preferences.getString("email_address", ""));
         code.setText(preferences.getString("code", ""));
         channel.setText(preferences.getString("channel", ""));
         captionInput.setText(preferences.getString("caption", ""));
@@ -244,6 +254,7 @@ public class MainActivity extends Activity {
         apiId.addTextChangedListener(watcher);
         apiHash.addTextChangedListener(watcher);
         phone.addTextChangedListener(watcher);
+        emailAddressInput.addTextChangedListener(watcher);
         code.addTextChangedListener(watcher);
         channel.addTextChangedListener(watcher);
         captionInput.addTextChangedListener(watcher);
@@ -255,6 +266,7 @@ public class MainActivity extends Activity {
             .putString("api_id", apiId.getText().toString())
             .putString("api_hash", apiHash.getText().toString())
             .putString("phone", phone.getText().toString())
+            .putString("email_address", emailAddressInput.getText().toString())
             .putString("code", code.getText().toString())
             .putString("channel", channel.getText().toString())
             .putString("caption", captionInput.getText().toString())
@@ -442,6 +454,8 @@ public class MainActivity extends Activity {
             loginRequested = requestLogin;
             phoneSubmitted = false;
             waitingForPhoneNumber = false;
+            waitingForEmailAddress = false;
+            waitingForEmailCode = false;
             log(requestLogin ? "Connecting to Telegram..." : "Restoring saved Telegram session...");
             client = Client.create(this::onUpdate, null, null);
         } catch (Throwable e) {
@@ -453,6 +467,7 @@ public class MainActivity extends Activity {
     private void onUpdate(TdApi.Object object) {
         if(object instanceof TdApi.UpdateAuthorizationState) {
             TdApi.AuthorizationState s=((TdApi.UpdateAuthorizationState)object).authorizationState;
+            log("AUTH STATE UPDATE: " + s.getClass().getSimpleName() + " | " + s.toString());
             if(s instanceof TdApi.AuthorizationStateWaitTdlibParameters) {
                 TdApi.SetTdlibParameters p=new TdApi.SetTdlibParameters();
                 p.databaseDirectory=new File(getFilesDir(),"tdlib").getAbsolutePath();
@@ -478,12 +493,48 @@ public class MainActivity extends Activity {
                 }
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
                 waitingForPhoneNumber = false;
+                waitingForEmailAddress = false;
+                waitingForEmailCode = false;
                 TdApi.AuthenticationCodeInfo info = ((TdApi.AuthorizationStateWaitCode)s).codeInfo;
                 showCodeInfo(info);
                 codeInfoView.setVisibility(View.VISIBLE);
                 resendButton.setVisibility(View.VISIBLE);
                 setAccountState("Waiting for login code");
                 log("Enter the code sent by Telegram.");
+            } else if(s instanceof TdApi.AuthorizationStateWaitEmailAddress) {
+                waitingForPhoneNumber = false;
+                waitingForEmailAddress = true;
+                waitingForEmailCode = false;
+                setAccountState("Email address required");
+                runOnUiThread(() -> {
+                    emailAddressInput.setVisibility(View.VISIBLE);
+                    submitEmailAddressButton.setVisibility(View.VISIBLE);
+                    code.setVisibility(View.GONE);
+                    submitCodeButton.setVisibility(View.GONE);
+                    codeInfoView.setVisibility(View.VISIBLE);
+                    codeInfoView.setText("Telegram requires an email address to continue. Enter the email address requested by Telegram.");
+                });
+                log("Telegram requested an email address. No email is sent until it is submitted.");
+            } else if(s instanceof TdApi.AuthorizationStateWaitEmailCode) {
+                waitingForPhoneNumber = false;
+                waitingForEmailAddress = false;
+                waitingForEmailCode = true;
+                TdApi.EmailAddressAuthenticationCodeInfo info = ((TdApi.AuthorizationStateWaitEmailCode)s).codeInfo;
+                setAccountState("Waiting for email code");
+                runOnUiThread(() -> {
+                    emailAddressInput.setVisibility(View.GONE);
+                    submitEmailAddressButton.setVisibility(View.GONE);
+                    code.setHint("Email verification code");
+                    code.setVisibility(View.VISIBLE);
+                    submitCodeButton.setText("Submit email code");
+                    submitCodeButton.setVisibility(View.VISIBLE);
+                    codeInfoView.setVisibility(View.VISIBLE);
+                    codeInfoView.setText(info == null ? "Telegram is waiting for the email code." :
+                        "Email code sent to: " + info.emailAddressPattern +
+                        (info.length > 0 ? "\\nCode length: " + info.length : ""));
+                });
+                log("Telegram is waiting for the email authentication code" +
+                    (info == null ? "." : " sent to " + info.emailAddressPattern + "."));
             } else if(s instanceof TdApi.AuthorizationStateWaitPassword) {
                 setAccountState("Password required");
                 log("This build does not yet include two-step password entry.");
@@ -502,6 +553,7 @@ public class MainActivity extends Activity {
                 setAccountState("Session closed");
             } else {
                 setAccountState(s.getClass().getSimpleName());
+                log("Unhandled authorization state: " + s.getClass().getSimpleName() + " | " + s.toString());
             }
         } else if(object instanceof TdApi.UpdateFile) {
             TdApi.File file = ((TdApi.UpdateFile)object).file;
@@ -551,16 +603,24 @@ public class MainActivity extends Activity {
         }
     }
     private void onResult(TdApi.Object o) {
+        if (o == null) {
+            log("TDLib RESULT: null response.");
+            return;
+        }
+        log("TDLib RESULT: " + o.getClass().getSimpleName() + " | " + o.toString());
         if(o instanceof TdApi.Error) {
             phoneSubmitted=false;
             loginRequested=false;
-            log("Telegram error: "+((TdApi.Error)o).message);
+            TdApi.Error error = (TdApi.Error)o;
+            log("TELEGRAM ERROR. Code: " + error.code + " | Message: " + error.message);
         } else if(o instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
             waitingForPhoneNumber = true;
             setAccountState("Not signed in");
             if(loginRequested) submitPhoneNumberIfNeeded();
         } else if(o instanceof TdApi.AuthorizationStateWaitCode) {
             waitingForPhoneNumber = false;
+            waitingForEmailAddress = false;
+            waitingForEmailCode = false;
             showCodeInfo(((TdApi.AuthorizationStateWaitCode)o).codeInfo);
             setAccountState("Waiting for login code");
             runOnUiThread(() -> {
@@ -569,6 +629,37 @@ public class MainActivity extends Activity {
                 codeInfoView.setVisibility(View.VISIBLE);
                 resendButton.setVisibility(View.VISIBLE);
             });
+        } else if(o instanceof TdApi.AuthorizationStateWaitEmailAddress) {
+            waitingForPhoneNumber = false;
+            waitingForEmailAddress = true;
+            waitingForEmailCode = false;
+            setAccountState("Email address required");
+            runOnUiThread(() -> {
+                emailAddressInput.setVisibility(View.VISIBLE);
+                submitEmailAddressButton.setVisibility(View.VISIBLE);
+                codeInfoView.setVisibility(View.VISIBLE);
+                codeInfoView.setText("Telegram requires an email address to continue.");
+            });
+            log("TDLib now requires an email address.");
+        } else if(o instanceof TdApi.AuthorizationStateWaitEmailCode) {
+            waitingForPhoneNumber = false;
+            waitingForEmailAddress = false;
+            waitingForEmailCode = true;
+            TdApi.EmailAddressAuthenticationCodeInfo info = ((TdApi.AuthorizationStateWaitEmailCode)o).codeInfo;
+            setAccountState("Waiting for email code");
+            runOnUiThread(() -> {
+                emailAddressInput.setVisibility(View.GONE);
+                submitEmailAddressButton.setVisibility(View.GONE);
+                code.setHint("Email verification code");
+                code.setVisibility(View.VISIBLE);
+                submitCodeButton.setText("Submit email code");
+                submitCodeButton.setVisibility(View.VISIBLE);
+                codeInfoView.setVisibility(View.VISIBLE);
+                codeInfoView.setText(info == null ? "Telegram is waiting for the email code." :
+                    "Email code sent to: " + info.emailAddressPattern +
+                    (info.length > 0 ? "\\nCode length: " + info.length : ""));
+            });
+            log("TDLib is waiting for the email code" + (info == null ? "." : " sent to " + info.emailAddressPattern + "."));
         } else if(o instanceof TdApi.AuthorizationStateReady) {
             isSignedIn = true;
             loginRequested = false;
@@ -668,9 +759,33 @@ public class MainActivity extends Activity {
         log("Requesting login code...");
         client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
     }
+    private void submitEmailAddress() {
+        String address = emailAddressInput.getText().toString().trim();
+        if (client == null || !waitingForEmailAddress) {
+            log("Email address cannot be submitted because TDLib is not waiting for one.");
+            return;
+        }
+        if (address.isEmpty() || !android.util.Patterns.EMAIL_ADDRESS.matcher(address).matches()) {
+            log("Enter a valid email address.");
+            return;
+        }
+        log("Submitting email address to TDLib...");
+        client.send(new TdApi.SetAuthenticationEmailAddress(address), this::onResult);
+    }
+
     private void submitCode() {
         String c=code.getText().toString().trim();
-        if(client!=null && !c.isEmpty()) client.send(new TdApi.CheckAuthenticationCode(c),this::onResult);
+        if (client == null || c.isEmpty()) {
+            log("Enter the authentication code first.");
+            return;
+        }
+        if (waitingForEmailCode) {
+            log("Submitting email authentication code to TDLib...");
+            client.send(new TdApi.CheckAuthenticationEmailCode(new TdApi.EmailAddressAuthenticationCode(c)), this::onResult);
+        } else {
+            log("Submitting Telegram authentication code to TDLib...");
+            client.send(new TdApi.CheckAuthenticationCode(c),this::onResult);
+        }
     }
     private void chooseFile() {
         Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); i.addCategory(Intent.CATEGORY_OPENABLE);
