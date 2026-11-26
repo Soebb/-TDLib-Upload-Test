@@ -36,6 +36,7 @@ public class MainActivity extends Activity {
     private volatile String selectedDatabasePath = "";
     private volatile String bulkDatabasePath = "";
     private volatile boolean bulkFailureHandling = false;
+    private volatile boolean bulkUploadAmbiguous = false;
     private Runnable bulkRetryRunnable;
     private Button resendButton, connectButton, submitCodeButton, uploadButton, stopButton;
     private ProgressBar uploadProgress;
@@ -749,6 +750,7 @@ public class MainActivity extends Activity {
             + " seconds; file upload stalled: " + track.name;
         log("UPLOAD TIMEOUT. " + reason);
         if (bulkUploadRunning) {
+            bulkUploadAmbiguous = true;
             final String uncertainUrl = bulkCurrentUrl;
             final String uncertainDatabase = bulkDatabasePath;
             clearUploadTracking();
@@ -1256,7 +1258,7 @@ public class MainActivity extends Activity {
         String username = channel.getText().toString().trim().replace("@", "");
         if (username.isEmpty()) { log("START BLOCKED: enter a public channel username."); return; }
         bulkDatabasePath = databasePath; bulkCaptionOverride = captionInput.getText().toString().trim();
-        bulkUploadRunning = true; bulkStopRequested = false; bulkFailureHandling=false;
+        bulkUploadRunning = true; bulkStopRequested = false; bulkFailureHandling=false; bulkUploadAmbiguous=false;
         bulkPostLoadInProgress=false; bulkDownloadInProgress=false; bulkChunkInFlight=false;
         bulkCurrentUrl=""; bulkCurrentFiles=null; bulkCurrentMedia=null; bulkChunkPlan=null; bulkChunkIndex=0;
         startUploadForegroundService();
@@ -1282,7 +1284,7 @@ public class MainActivity extends Activity {
     }
 
     private void loadNextBulkPost() {
-        if (!bulkUploadRunning) return;
+        if (!bulkUploadRunning || bulkUploadAmbiguous) return;
         if (bulkStopRequested) { finishBulkUpload("Stopped by user. Select the same database and press Start uploading to resume."); return; }
         if (bulkPostLoadInProgress) return;
         bulkPostLoadInProgress = true;
@@ -1333,7 +1335,7 @@ public class MainActivity extends Activity {
     }
 
     private void sendNextBulkChunk() {
-        if (!bulkUploadRunning) return;
+        if (!bulkUploadRunning || bulkUploadAmbiguous) return;
         if (bulkStopRequested && bulkChunkIndex < bulkChunkPlan.length()) {
             io.execute(() -> stopCurrentPostAndFinish());
             return;
@@ -1428,7 +1430,7 @@ public class MainActivity extends Activity {
         synchronized (bulkAwaitingMessageIds) {
             ready = bulkChunkResponseReceived && bulkAwaitingMessageIds.isEmpty();
         }
-        if (!ready || !bulkUploadRunning) return;
+        if (!ready || !bulkUploadRunning || bulkUploadAmbiguous) return;
         final String url = bulkCurrentUrl;
         final int number = bulkCurrentChunkNumber;
         final String signature = bulkCurrentChunkSignature;
@@ -1493,7 +1495,7 @@ public class MainActivity extends Activity {
     }
 
     private void failCurrentBulkPost(String reason) {
-        if (!bulkUploadRunning || bulkFailureHandling) return;
+        if (!bulkUploadRunning || bulkFailureHandling || bulkUploadAmbiguous) return;
         bulkFailureHandling = true; bulkChunkInFlight = false; bulkDownloadInProgress = false;
         final String failedUrl = bulkCurrentUrl;
         synchronized (bulkAwaitingMessageIds) {
