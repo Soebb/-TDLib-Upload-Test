@@ -1009,8 +1009,11 @@ public class MainActivity extends Activity {
                 if ("pending".equals(state)) {
                     long delay = attempts == 1 ? 5000L : 15000L;
                     log("Retry scheduled in " + (delay/1000) + " seconds.");
-                    bulkFailureHandling = false;
-                    bulkRetryRunnable = () -> { if (bulkUploadRunning) loadNextBulkPost(); };
+                    bulkRetryRunnable = () -> {
+                        bulkRetryRunnable = null;
+                        bulkFailureHandling = false;
+                        if (bulkUploadRunning) loadNextBulkPost();
+                    };
                     mainHandler.postDelayed(bulkRetryRunnable, delay);
                 } else {
                     log("Link marked failed after 3 attempts: " + failedUrl);
