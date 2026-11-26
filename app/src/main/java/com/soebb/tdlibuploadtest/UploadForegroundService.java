@@ -7,13 +7,21 @@ import android.app.Service;
 import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 
 public final class UploadForegroundService extends Service {
     private static final String CHANNEL_ID = "bulk_upload";
     private static final int NOTIFICATION_ID = 2061;
+    private PowerManager.WakeLock wakeLock;
 
     @Override public void onCreate() {
         super.onCreate();
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        if (powerManager != null) {
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, getPackageName() + ":UploadQueue");
+            wakeLock.setReferenceCounted(false);
+            wakeLock.acquire();
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID, "Background uploads", NotificationManager.IMPORTANCE_LOW);
@@ -39,6 +47,7 @@ public final class UploadForegroundService extends Service {
     }
 
     @Override public void onDestroy() {
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         stopForeground(true);
         super.onDestroy();
     }
