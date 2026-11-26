@@ -34,7 +34,7 @@ public class MainActivity extends Activity {
     private volatile String bulkDatabasePath = "";
     private volatile boolean bulkFailureHandling = false;
     private Runnable bulkRetryRunnable;
-    private Button resendButton, connectButton, submitCodeButton, uploadButton;
+    private Button resendButton, connectButton, submitCodeButton, uploadButton, stopButton;
     private ProgressBar uploadProgress;
     private TextView uploadProgressText;
     private final StringBuilder logBuffer = new StringBuilder();
@@ -57,6 +57,7 @@ public class MainActivity extends Activity {
     private SharedPreferences preferences;
     private PythonBulkEngine bulkEngine;
     private volatile boolean bulkUploadRunning = false;
+    private volatile boolean bulkStopRequested = false;
     private volatile boolean bulkPostLoadInProgress = false;
     private volatile boolean bulkDownloadInProgress = false;
     private volatile boolean bulkChunkInFlight = false;
@@ -161,6 +162,8 @@ public class MainActivity extends Activity {
         button(root,"Upload a local file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
         uploadButton = button(root,"Start uploading",v -> startBulkUpload());
+        stopButton = button(root,"Stop",v -> requestBulkStop());
+        stopButton.setEnabled(false);
         uploadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         uploadProgress.setMax(100);
         uploadProgress.setVisibility(View.GONE);
@@ -806,12 +809,13 @@ public class MainActivity extends Activity {
         String username = channel.getText().toString().trim().replace("@", "");
         if (username.isEmpty()) { log("START BLOCKED: enter a public channel username."); return; }
         bulkDatabasePath = databasePath; bulkCaptionOverride = captionInput.getText().toString().trim();
-        bulkUploadRunning = true; bulkFailureHandling=false;
+        bulkUploadRunning = true; bulkStopRequested = false; bulkFailureHandling=false;
         bulkPostLoadInProgress=false; bulkDownloadInProgress=false; bulkChunkInFlight=false;
         bulkCurrentUrl=""; bulkCurrentFiles=null; bulkCurrentMedia=null; bulkChunkPlan=null; bulkChunkIndex=0;
         startUploadForegroundService();
         runOnUiThread(() -> {
-            uploadButton.setEnabled(false); databaseSpinner.setEnabled(false); deleteDatabaseButton.setEnabled(false);
+            uploadButton.setEnabled(false); stopButton.setEnabled(true); stopButton.setText("Stop");
+            databaseSpinner.setEnabled(false); deleteDatabaseButton.setEnabled(false);
             uploadProgress.setVisibility(View.VISIBLE); uploadProgress.setIndeterminate(true);
             uploadProgressText.setText("Preparing selected database...");
         });
@@ -831,11 +835,18 @@ public class MainActivity extends Activity {
     }
 
     private void loadNextBulkPost() {
+        if (!bulkUploadRunning) return;
+        if (bulkStopRequested) { finishBulkUpload("Stopped by user. Select the same database and press Start uploading to resume."); return; }
         if (bulkPostLoadInProgress) return;
         bulkPostLoadInProgress = true;
         io.execute(() -> {
             try {
                 String url = bulkEngine.nextPending(bulkDatabasePath);
+                if (bulkStopRequested) {
+                    bulkPostLoadInProgress = false;
+                    finishBulkUpload("Stopped by user. Select the same database and press Start uploading to resume.");
+                    return;
+                }
                 if (url == null) {
                     bulkPostLoadInProgress = false;
                     String counts = bulkEngine.counts(bulkDatabasePath);
@@ -851,6 +862,7 @@ public class MainActivity extends Activity {
                 bulkPostLoadInProgress = false;
                 JSONObject data = new JSONObject(bulkEngine.downloadPost(url));
                 bulkDownloadInProgress = false;
+                if (bulkStopRequested) { stopCurrentPostAndFinish(); return; }
                 bulkCurrentFiles = data.getJSONArray("files");
                 bulkCurrentMedia = data.getJSONArray("media");
                 if (bulkCurrentFiles.length() == 0 || bulkCurrentFiles.length() != bulkCurrentMedia.length())
@@ -871,6 +883,10 @@ public class MainActivity extends Activity {
 
     private void sendNextBulkChunk() {
         if (!bulkUploadRunning) return;
+        if (bulkStopRequested && bulkChunkIndex < bulkChunkPlan.length()) {
+            io.execute(() -> stopCurrentPostAndFinish());
+            return;
+        }
         if (bulkChunkIndex >= bulkChunkPlan.length()) {
             final String completedUrl = bulkCurrentUrl;
             io.execute(() -> {
@@ -963,7 +979,11 @@ public class MainActivity extends Activity {
                 bulkEngine.markChunkSent(bulkDatabasePath, url, number, signature);
                 bulkChunkInFlight = false;
                 bulkChunkIndex++;
-                sendNextBulkChunk();
+                if (bulkStopRequested && bulkChunkIndex < bulkChunkPlan.length()) {
+                    stopCurrentPostAndFinish();
+                } else {
+                    sendNextBulkChunk();
+                }
             } catch (Throwable error) {
                 failCurrentBulkPost("Could not save completed media batch: " + error.getMessage());
             }
@@ -1025,6 +1045,11 @@ public class MainActivity extends Activity {
                 refreshBatchListOnIo(bulkDatabasePath);
                 log(reason + " URL: " + failedUrl + " (attempt " + attempts + "/4).");
                 if ("pending".equals(state)) {
+                    if (bulkStopRequested) {
+                        bulkFailureHandling = false;
+                        finishBulkUpload("Stopped by user. Select the same database and press Start uploading to resume.");
+                        return;
+                    }
                     long delay = attempts == 1 ? 5000L : (attempts == 2 ? 15000L : 30000L);
                     log("Retry scheduled in " + (delay/1000) + " seconds.");
                     bulkRetryRunnable = () -> {
@@ -1035,14 +1060,50 @@ public class MainActivity extends Activity {
                     mainHandler.postDelayed(bulkRetryRunnable, delay);
                 } else {
                     log("Link marked failed after the initial attempt and 3 retries: " + failedUrl);
-                    bulkFailureHandling = false; loadNextBulkPost();
+                    bulkFailureHandling = false;
+                    if (bulkStopRequested) finishBulkUpload("Stopped by user. Select the same database and press Start uploading to resume.");
+                    else loadNextBulkPost();
                 }
             } catch (Throwable error) {
-                bulkFailureHandling = false; log("Could not save retry status: " + error.getMessage()); loadNextBulkPost();
+                bulkFailureHandling = false; log("Could not save retry status: " + error.getMessage());
+                if (bulkStopRequested) finishBulkUpload("Stopped by user. Select the same database and press Start uploading to resume.");
+                else loadNextBulkPost();
             }
         });
     }
 
+
+    private void requestBulkStop() {
+        if (!bulkUploadRunning || bulkStopRequested) return;
+        bulkStopRequested = true;
+        stopButton.setEnabled(false);
+        stopButton.setText("Stopping...");
+        log("Manual stop requested. Waiting for the current safe checkpoint...");
+        if (bulkRetryRunnable != null) {
+            mainHandler.removeCallbacks(bulkRetryRunnable);
+            bulkRetryRunnable = null;
+            bulkFailureHandling = false;
+            finishBulkUpload("Stopped by user. Select the same database and press Start uploading to resume.");
+            return;
+        }
+        if (!bulkDownloadInProgress && !bulkChunkInFlight && !bulkPostLoadInProgress && !bulkFailureHandling) {
+            io.execute(() -> stopCurrentPostAndFinish());
+        }
+    }
+
+    /** Called on the IO executor after the current download or confirmed media chunk is safe. */
+    private void stopCurrentPostAndFinish() {
+        try {
+            if (bulkEngine != null && bulkCurrentUrl != null && !bulkCurrentUrl.isEmpty()) {
+                bulkEngine.releaseProcessing(bulkDatabasePath, bulkCurrentUrl);
+                log("Current link returned to pending without consuming a retry: " + bulkCurrentUrl);
+            }
+            refreshBatchListOnIo(bulkDatabasePath);
+        } catch (Throwable error) {
+            log("Could not checkpoint the stopped link: " + error.getMessage());
+        }
+        finishBulkUpload("Stopped by user. Select the same database and press Start uploading to resume.");
+    }
 
     private void startUploadForegroundService() {
         try {
@@ -1069,6 +1130,7 @@ public class MainActivity extends Activity {
         refreshBatchListOnIo(bulkDatabasePath);
         runOnUiThread(() -> {
             uploadButton.setEnabled(!isSelectedDatabaseComplete());
+            stopButton.setEnabled(false); stopButton.setText("Stop");
             databaseSpinner.setEnabled(true); deleteDatabaseButton.setEnabled(true);
             uploadProgress.setIndeterminate(false); uploadProgressText.setText(message);
         });
