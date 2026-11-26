@@ -374,11 +374,19 @@ public class MainActivity extends Activity {
         deleteDatabaseButton.setVisibility(item.processed ? View.VISIBLE : View.GONE);
         reviewUncertainButton.setText("Review uncertain uploads (" + item.review + ")");
         reviewUncertainButton.setEnabled(!bulkUploadRunning && item.review > 0);
-        uploadButton.setEnabled(!bulkUploadRunning);
+        uploadButton.setEnabled(!bulkUploadRunning && canStartSelectedDatabase());
     }
 
     private boolean isSelectedDatabaseComplete() {
         for (BatchItem item : databaseItems) if (item.path.equals(selectedDatabasePath)) return item.complete;
+        return false;
+    }
+
+    private boolean canStartSelectedDatabase() {
+        for (BatchItem item : databaseItems) {
+            if (item.path.equals(selectedDatabasePath))
+                return item.pending > 0 || item.failed > 0;
+        }
         return false;
     }
 
@@ -1235,6 +1243,10 @@ public class MainActivity extends Activity {
         for (BatchItem candidate:databaseItems) if(candidate.path.equals(selectedDatabasePath)) item=candidate;
         if (item == null) { log("Selected database is no longer available."); return; }
         if (item.complete) { log("This database is fully successful and locked."); return; }
+        if (item.pending == 0 && item.failed == 0) {
+            log(item.review > 0 ? "This database has no retryable links. Resolve uncertain uploads first." : "This database has no pending links.");
+            return;
+        }
         beginBulkUpload(selectedDatabasePath);
     }
 
@@ -1580,7 +1592,7 @@ public class MainActivity extends Activity {
         if (bulkRetryRunnable != null) { mainHandler.removeCallbacks(bulkRetryRunnable); bulkRetryRunnable=null; }
         refreshBatchListOnIo(bulkDatabasePath);
         runOnUiThread(() -> {
-            uploadButton.setEnabled(!isSelectedDatabaseComplete());
+            uploadButton.setEnabled(canStartSelectedDatabase());
             stopButton.setEnabled(false); stopButton.setText("Stop");
             databaseSpinner.setEnabled(true); deleteDatabaseButton.setEnabled(true); deleteCompletedDatabasesButton.setEnabled(!successfulDatabaseItems.isEmpty());
             uploadProgress.setIndeterminate(false); uploadProgressText.setText(message);
