@@ -782,14 +782,16 @@ public class MainActivity extends Activity {
 
     private void startBulkUpload() {
         if (bulkUploadRunning || uploadInProgress) { log("An upload is already in progress."); return; }
-        if (client == null || !isSignedIn) { log("START BLOCKED: sign in to Telegram first."); return; }
-        String username = channel.getText().toString().trim().replace("@", "");
-        if (username.isEmpty()) { log("START BLOCKED: enter a public channel username."); return; }
         String pasted = linksInput.getText().toString();
         if (!pasted.trim().isEmpty()) {
-            createBatchFromInput(pasted, "Pasted links " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date()), true);
+            boolean canStartNow = client != null && isSignedIn;
+            createBatchFromInput(pasted, "Pasted links " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date()), canStartNow);
+            if (!canStartNow) log("The links were queued in a new database. Sign in to Telegram, then select this database and press Start uploading.");
             return;
         }
+        if (client == null || !isSignedIn) { log("START BLOCKED: sign in to Telegram first. The selected database has been kept."); return; }
+        String username = channel.getText().toString().trim().replace("@", "");
+        if (username.isEmpty()) { log("START BLOCKED: enter a public channel username."); return; }
         if (selectedDatabasePath.isEmpty()) { log("START BLOCKED: import a TXT file or paste links to create/select a database."); return; }
         BatchItem item=null;
         for (BatchItem candidate:databaseItems) if(candidate.path.equals(selectedDatabasePath)) item=candidate;
