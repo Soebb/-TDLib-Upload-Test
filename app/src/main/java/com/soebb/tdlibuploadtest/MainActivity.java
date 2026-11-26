@@ -414,7 +414,7 @@ public class MainActivity extends Activity {
                             String url = post.optString("url");
                             new android.app.AlertDialog.Builder(this)
                                 .setTitle("Check this Instagram post")
-                                .setMessage("The app cannot confirm whether Telegram accepted every media item. Open your Telegram channel and inspect this post before choosing.\\n\\n" + url)
+                                .setMessage("The app cannot confirm whether Telegram accepted every media item. Open your Telegram channel and inspect this post before choosing.\n\n" + url)
                                 .setPositiveButton("Mark as uploaded", (d, w) -> resolveUncertainPost(path, url, true))
                                 .setNeutralButton("Retry upload", (d, w) -> new android.app.AlertDialog.Builder(this)
                                     .setTitle("Retry may create duplicates")
