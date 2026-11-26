@@ -386,7 +386,7 @@ public class MainActivity extends Activity {
     private boolean canStartSelectedDatabase() {
         for (BatchItem item : databaseItems) {
             if (item.path.equals(selectedDatabasePath))
-                return item.pending > 0 || item.failed > 0;
+                return item.pending > 0 || item.failed > 0 || item.processing > 0;
         }
         return false;
     }
@@ -1245,7 +1245,7 @@ public class MainActivity extends Activity {
         for (BatchItem candidate:databaseItems) if(candidate.path.equals(selectedDatabasePath)) item=candidate;
         if (item == null) { log("Selected database is no longer available."); return; }
         if (item.complete) { log("This database is fully successful and locked."); return; }
-        if (item.pending == 0 && item.failed == 0) {
+        if (item.pending == 0 && item.failed == 0 && item.processing == 0) {
             log(item.review > 0 ? "This database has no retryable links. Resolve uncertain uploads first." : "This database has no pending links.");
             return;
         }
