@@ -184,6 +184,22 @@ def attempts_for(database_path, url):
         conn.close()
 
 
+def release_processing(database_path, url):
+    """Return a manually stopped in-progress link to pending without consuming an attempt."""
+    conn = _connect(database_path)
+    try:
+        conn.execute("""
+            UPDATE posts
+            SET status='pending',
+                attempts=MAX(0, attempts-1),
+                updated_at=CURRENT_TIMESTAMP
+            WHERE url=? AND status='processing'
+        """, (url,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def retry_or_fail(database_path, url, error, max_attempts=4):
     conn = _connect(database_path)
     try:
