@@ -71,6 +71,7 @@ public class MainActivity extends Activity {
     private boolean hasNextCodeMethod = false;
     private Runnable resendCountdown;
     private File chosenFile;
+    private String chosenFileMimeType = "";
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private int pendingApiId;
     private String pendingApiHash = "";
@@ -1044,6 +1045,7 @@ public class MainActivity extends Activity {
                         byte[] b=new byte[64*1024]; int n; while((n=in.read(b))>0) os.write(b,0,n);
                     }
                     chosenFile=out;
+                    chosenFileMimeType = getContentResolver().getType(uri);
                     runOnUiThread(()->{
                         selected.setText(out.getName()+" ("+formatBytes(out.length())+")");
                         log("Local file selected. Starting upload automatically.");
@@ -1099,9 +1101,9 @@ public class MainActivity extends Activity {
             }
             TdApi.Chat chat = (TdApi.Chat)result;
             log("Channel resolved: " + chat.title + " (ID " + chat.id + ").");
-            log("Sending video/document to Telegram...");
+            log("Preparing Telegram media message...");
             TdApi.InputMessageContent content;
-            if (isVideoFile(chosenFile.getName())) {
+            if (isVideoFile(chosenFile.getName(), chosenFileMimeType)) {
                 int duration = 0, width = 0, height = 0;
                 android.media.MediaMetadataRetriever metadata = new android.media.MediaMetadataRetriever();
                 try {
@@ -1134,11 +1136,20 @@ public class MainActivity extends Activity {
                 videoMessage.caption = captionText.isEmpty() ? null : new TdApi.FormattedText(captionText, new TdApi.TextEntity[0]);
                 content = videoMessage;
                 log("Sending as Telegram video (" + duration + "s, " + width + "x" + height + "). Caption: " + (captionText.isEmpty() ? "none" : "custom text"));
+            } else if (isImageFile(chosenFile.getName(), chosenFileMimeType)) {
+                TdApi.InputPhoto inputPhoto = new TdApi.InputPhoto(
+                    new TdApi.InputFileLocal(chosenFile.getAbsolutePath()), null, null, new int[0], 0, 0);
+                TdApi.InputMessagePhoto photoMessage = new TdApi.InputMessagePhoto();
+                photoMessage.photo = inputPhoto;
+                String captionText = captionInput.getText().toString().trim();
+                photoMessage.caption = captionText.isEmpty() ? null : new TdApi.FormattedText(captionText, new TdApi.TextEntity[0]);
+                content = photoMessage;
+                log("Sending selected image as Telegram photo. Caption: " + (captionText.isEmpty() ? "none" : "custom text"));
             } else {
                 TdApi.InputDocument document = new TdApi.InputDocument(
                     new TdApi.InputFileLocal(chosenFile.getAbsolutePath()), null, false);
                 content = new TdApi.InputMessageDocument(document, null);
-                log("Selected file is not a recognized video extension; sending as document.");
+                log("Selected file is neither a recognized video nor image; sending as document.");
             }
             client.send(new TdApi.SendMessage(chat.id, null, null, null, null, content), response -> {
                 if(response instanceof TdApi.Error) {
@@ -1160,6 +1171,9 @@ public class MainActivity extends Activity {
                     if(message.content instanceof TdApi.MessageVideo) {
                         uploadFileId = ((TdApi.MessageVideo)message.content).video.video.id;
                         log("Telegram accepted the video. Tracking upload file ID " + uploadFileId + ".");
+                    } else if(message.content instanceof TdApi.MessagePhoto) {
+                        uploadFileId = uploadFileIdForMessage(message);
+                        log("Telegram accepted the photo. Tracking upload file ID " + uploadFileId + ".");
                     } else if(message.content instanceof TdApi.MessageDocument) {
                         uploadFileId = ((TdApi.MessageDocument)message.content).document.document.id;
                         log("Telegram accepted the document. Tracking upload file ID " + uploadFileId + ".");
@@ -1394,7 +1408,7 @@ public class MainActivity extends Activity {
             ? null : new TdApi.FormattedText(captionText, new TdApi.TextEntity[0]);
         int width = meta.optInt("width", 0);
         int height = meta.optInt("height", 0);
-        if (meta.optBoolean("is_video", false) || isVideoFile(file.getName())) {
+        if (meta.optBoolean("is_video", false) || isVideoFile(file.getName(), null)) {
             TdApi.InputVideo video = new TdApi.InputVideo();
             video.video = new TdApi.InputFileLocal(file.getAbsolutePath());
             video.thumbnail = null;
@@ -1410,23 +1424,20 @@ public class MainActivity extends Activity {
             message.caption = caption;
             return message;
         }
-        String lower = file.getName().toLowerCase(java.util.Locale.US);
-        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
-            lower.endsWith(".webp") || lower.endsWith(".heic")) {
-            TdApi.InputMessagePhoto message = new TdApi.InputMessagePhoto();
-            message.photo = new TdApi.InputPhoto(
-                new TdApi.InputFileLocal(file.getAbsolutePath()),
-                null,
-                null,
-                new int[0],
-                width,
-                height
-            );
-            message.caption = caption;
-            return message;
-        }
-        TdApi.InputDocument document = new TdApi.InputDocument(new TdApi.InputFileLocal(file.getAbsolutePath()), null, false);
-        return new TdApi.InputMessageDocument(document, caption);
+        // Instagram extraction only yields photos and videos. Every non-video item
+        // must therefore be sent as a Telegram photo, never downgraded to document
+        // merely because its extension is unfamiliar (for example AVIF).
+        TdApi.InputMessagePhoto message = new TdApi.InputMessagePhoto();
+        message.photo = new TdApi.InputPhoto(
+            new TdApi.InputFileLocal(file.getAbsolutePath()),
+            null,
+            null,
+            new int[0],
+            width,
+            height
+        );
+        message.caption = caption;
+        return message;
     }
 
     private void failCurrentBulkPost(String reason) {
@@ -1538,11 +1549,28 @@ public class MainActivity extends Activity {
     }
 
     private boolean isVideoFile(String name) {
+        return isVideoFile(name, null);
+    }
+
+    private boolean isVideoFile(String name, String mimeType) {
+        if (mimeType != null && mimeType.toLowerCase(java.util.Locale.US).startsWith("video/")) return true;
         String lower = name == null ? "" : name.toLowerCase(java.util.Locale.US);
         return lower.endsWith(".mp4") || lower.endsWith(".m4v") || lower.endsWith(".mov")
             || lower.endsWith(".mkv") || lower.endsWith(".webm") || lower.endsWith(".avi")
             || lower.endsWith(".3gp") || lower.endsWith(".mpeg") || lower.endsWith(".mpg")
-            || lower.endsWith(".ts") || lower.endsWith(".mts") || lower.endsWith(".m2ts");
+            || lower.endsWith(".ts") || lower.endsWith(".mts") || lower.endsWith(".m2ts")
+            || lower.endsWith(".m4v") || lower.endsWith(".ogv") || lower.endsWith(".vob")
+            || lower.endsWith(".flv") || lower.endsWith(".wmv");
+    }
+
+    private boolean isImageFile(String name, String mimeType) {
+        if (mimeType != null && mimeType.toLowerCase(java.util.Locale.US).startsWith("image/")) return true;
+        String lower = name == null ? "" : name.toLowerCase(java.util.Locale.US);
+        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".jpe")
+            || lower.endsWith(".jfif") || lower.endsWith(".png") || lower.endsWith(".webp")
+            || lower.endsWith(".heic") || lower.endsWith(".heif") || lower.endsWith(".avif")
+            || lower.endsWith(".gif") || lower.endsWith(".bmp") || lower.endsWith(".tif")
+            || lower.endsWith(".tiff");
     }
 
     private String formatBytes(long bytes) {
