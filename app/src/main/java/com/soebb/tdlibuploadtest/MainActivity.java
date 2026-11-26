@@ -127,11 +127,9 @@ public class MainActivity extends Activity {
             | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
             | android.text.InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
         root.addView(linksInput);
-        button(root,"Import links into SQLite",v -> importLinks());
         queueSummary = new TextView(this);
         queueSummary.setText("Queue database is initializing...");
         root.addView(queueSummary);
-        button(root,"Refresh queue status",v -> refreshQueueStatus());
         button(root,"Import links.txt file",v -> chooseLinksFile());
         button(root,"Upload a local file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
@@ -239,37 +237,6 @@ public class MainActivity extends Activity {
                 log("Python/Chaquopy initialized. yt-dlp and sqlite3 are ready.");
             } catch (Throwable error) {
                 log("Python engine initialization failed: " + error.getMessage());
-            }
-        });
-    }
-
-    private void importLinks() {
-        String text = linksInput.getText().toString();
-        if (text.trim().isEmpty()) {
-            log("No links entered.");
-            return;
-        }
-        io.execute(() -> {
-            try {
-                if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
-                String result = bulkEngine.importLinks(text);
-                String counts = bulkEngine.counts();
-                runOnUiThread(() -> queueSummary.setText("Import: " + result + "\nQueue: " + counts));
-                log("Links imported into Python SQLite database: " + result);
-            } catch (Throwable error) {
-                log("Link import failed: " + error.getMessage());
-            }
-        });
-    }
-
-    private void refreshQueueStatus() {
-        io.execute(() -> {
-            try {
-                if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
-                String counts = bulkEngine.counts();
-                runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
-            } catch (Throwable error) {
-                log("Could not read queue database: " + error.getMessage());
             }
         });
     }
