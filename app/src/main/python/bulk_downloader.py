@@ -93,13 +93,13 @@ def create_batch(database_directory, text, display_name=None):
 def _counts(database_path):
     conn = _connect(database_path)
     try:
-        result = {name: 0 for name in ("pending", "processing", "done", "failed")}
+        result = {name: 0 for name in ("pending", "processing", "done", "failed", "review")}
         for status, amount in conn.execute("SELECT status, COUNT(*) FROM posts GROUP BY status"):
             result[status] = amount
         result["total"] = sum(result.values())
         row = conn.execute("SELECT name FROM batch_info WHERE id=1").fetchone()
         result["name"] = row[0] if row else Path(database_path).stem
-        result["processed"] = result["total"] > 0 and result["pending"] == 0 and result["processing"] == 0
+        result["processed"] = result["total"] > 0 and result["pending"] == 0 and result["processing"] == 0 and result["review"] == 0
         result["complete"] = result["total"] > 0 and result["done"] == result["total"]
         return result
     finally:
@@ -213,6 +213,46 @@ def retry_or_fail(database_path, url, error, max_attempts=4):
         )
         conn.commit()
         return {"status": status, "attempts": attempts, "remaining": max(0, max_attempts-attempts)}
+    finally:
+        conn.close()
+
+
+
+def mark_review(database_path, url, error):
+    """Hold an upload with an ambiguous Telegram result for explicit user review."""
+    conn = _connect(database_path)
+    try:
+        conn.execute("""
+            UPDATE posts SET status='review', last_error=?, updated_at=CURRENT_TIMESTAMP
+            WHERE url=? AND status='processing'
+        """, (str(error)[:2000], url))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def review_posts(database_path):
+    conn = _connect(database_path)
+    try:
+        return [
+            {"url": url, "error": error or "Telegram upload result is uncertain."}
+            for url, error in conn.execute(
+                "SELECT url, last_error FROM posts WHERE status='review' ORDER BY rowid"
+            )
+        ]
+    finally:
+        conn.close()
+
+
+def resolve_review(database_path, url, uploaded):
+    conn = _connect(database_path)
+    try:
+        status = 'done' if uploaded else 'pending'
+        conn.execute(
+            "UPDATE posts SET status=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='review'",
+            (status, url),
+        )
+        conn.commit()
     finally:
         conn.close()
 
