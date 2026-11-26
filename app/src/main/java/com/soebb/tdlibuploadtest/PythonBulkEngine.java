@@ -75,7 +75,7 @@ public final class PythonBulkEngine {
         module.callAttr("mark_review", databasePath, url, error);
     }
     public String reviewPosts(String databasePath) {
-        return module.callAttr("review_posts", databasePath).toString();
+        return module.callAttr("review_posts_json", databasePath).toString();
     }
     public void resolveReview(String databasePath, String url, boolean uploaded) {
         module.callAttr("resolve_review", databasePath, url, uploaded);
