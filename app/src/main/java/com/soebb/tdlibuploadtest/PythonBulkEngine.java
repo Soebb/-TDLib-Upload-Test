@@ -67,6 +67,10 @@ public final class PythonBulkEngine {
         module.callAttr("mark_done", databasePath, url);
     }
 
+    public void markPending(String url) {
+        module.callAttr("mark_pending", databasePath, url);
+    }
+
     public void markFailed(String url, String error) {
         module.callAttr("mark_failed", databasePath, url, error);
     }
