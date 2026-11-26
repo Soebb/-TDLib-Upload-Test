@@ -52,6 +52,7 @@ public class MainActivity extends Activity {
     private final HashMap<String, UploadProgressTrack> uploadTracksByPath = new HashMap<>();
     private final HashMap<Long, UploadProgressTrack> uploadTracksByMessageId = new HashMap<>();
     private final HashSet<Long> completedUploadMessageIds = new HashSet<>();
+    private final HashSet<Long> timedOutUploadMessageIds = new HashSet<>();
     private static final class UploadProgressTrack {
         final String name;
         final long totalBytes;
@@ -582,7 +583,21 @@ public class MainActivity extends Activity {
         } else if(object instanceof TdApi.UpdateFile) {
             handleUploadFileUpdate(((TdApi.UpdateFile)object).file);
         } else if(object instanceof TdApi.UpdateMessageSendSucceeded) {
-            TdApi.Message message = ((TdApi.UpdateMessageSendSucceeded)object).message;
+            TdApi.UpdateMessageSendSucceeded succeeded = (TdApi.UpdateMessageSendSucceeded)object;
+            TdApi.Message message = succeeded.message;
+            boolean wasTimedOut;
+            synchronized (timedOutUploadMessageIds) { wasTimedOut = timedOutUploadMessageIds.remove(succeeded.oldMessageId); }
+            if (wasTimedOut) {
+                log("A timed-out upload completed late. Deleting the late Telegram message to prevent a duplicate.");
+                if (client != null && message != null)
+                    client.send(new TdApi.DeleteMessages(message.chatId, new long[]{message.id}, true), response -> {
+                        if (response instanceof TdApi.Error)
+                            log("Could not delete late completed message " + message.id + ": " + ((TdApi.Error) response).message);
+                        else
+                            log("Late completed message " + message.id + " was deleted.");
+                    });
+                return;
+            }
             uploadInProgress = false;
             if (!bulkUploadRunning) stopUploadForegroundService();
             runOnUiThread(() -> {
@@ -600,6 +615,12 @@ public class MainActivity extends Activity {
             }
         } else if(object instanceof TdApi.UpdateMessageSendFailed) {
             TdApi.UpdateMessageSendFailed failed = (TdApi.UpdateMessageSendFailed)object;
+            boolean wasTimedOut;
+            synchronized (timedOutUploadMessageIds) { wasTimedOut = timedOutUploadMessageIds.remove(failed.oldMessageId); }
+            if (wasTimedOut) {
+                log("Timed-out upload later reported failure: " + failed.error.message);
+                return;
+            }
             uploadInProgress = false;
             if (!bulkUploadRunning) clearUploadTracking();
             if (!bulkUploadRunning) stopUploadForegroundService();
@@ -648,6 +669,7 @@ public class MainActivity extends Activity {
         if (track == null || client == null || track.messageId == 0L || track.chatId == 0L) return;
         final long messageId = track.messageId;
         final long chatId = track.chatId;
+        synchronized (timedOutUploadMessageIds) { timedOutUploadMessageIds.add(messageId); }
         log("Requesting cancellation of stalled Telegram message " + messageId + ".");
         client.send(new TdApi.DeleteMessages(chatId, new long[]{messageId}, true), response -> {
             if (response instanceof TdApi.Error) {
