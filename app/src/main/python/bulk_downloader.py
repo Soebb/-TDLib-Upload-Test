@@ -380,9 +380,11 @@ def download_post(url, download_root, progress_listener=None):
                 else:
                     return
             step = percent // 10
-            if step > progress_steps.get(key, 0):
+            previous_step = progress_steps.get(key, 0)
+            for completed_step in range(previous_step + 1, step + 1):
+                progress_listener.onProgress(filename, min(100, completed_step * 10))
+            if step > previous_step:
                 progress_steps[key] = step
-                progress_listener.onProgress(filename, min(100, step * 10))
         elif status == "finished" and progress_steps.get(key, 0) < 10:
             progress_steps[key] = 10
             progress_listener.onProgress(filename, 100)
