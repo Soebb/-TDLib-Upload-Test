@@ -679,6 +679,7 @@ public class MainActivity extends Activity {
                 if(response instanceof TdApi.Error) {
                     TdApi.Error error = (TdApi.Error)response;
                     uploadInProgress = false;
+                    stopUploadForegroundService();
                     runOnUiThread(() -> {
                         uploadButton.setEnabled(true);
                         uploadProgress.setIndeterminate(false);
@@ -716,6 +717,14 @@ public class MainActivity extends Activity {
         bulkUploadRunning = true;
         bulkPaused = false;
         bulkStopRequested = false;
+        bulkPostLoadInProgress = false;
+        bulkDownloadInProgress = false;
+        bulkChunkInFlight = false;
+        bulkCurrentUrl = "";
+        bulkCurrentFiles = null;
+        bulkCurrentMedia = null;
+        bulkChunkPlan = null;
+        bulkChunkIndex = 0;
         startUploadForegroundService();
         runOnUiThread(() -> {
             uploadButton.setEnabled(false);
@@ -1030,6 +1039,9 @@ public class MainActivity extends Activity {
         bulkUploadRunning = false;
         bulkPaused = false;
         bulkStopRequested = false;
+        bulkPostLoadInProgress = false;
+        bulkDownloadInProgress = false;
+        bulkChunkInFlight = false;
         stopUploadForegroundService();
         runOnUiThread(() -> {
             uploadButton.setEnabled(true);
