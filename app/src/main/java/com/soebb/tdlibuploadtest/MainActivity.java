@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
     private volatile boolean bulkUploadRunning = false;
     private volatile boolean bulkPaused = false;
     private volatile boolean bulkStopRequested = false;
+    private volatile boolean bulkPostLoadInProgress = false;
     private volatile boolean bulkDownloadInProgress = false;
     private volatile boolean bulkChunkInFlight = false;
     private Button pauseButton, resumeButton, stopButton;
@@ -756,11 +757,14 @@ public class MainActivity extends Activity {
     private void loadNextBulkPost() {
         if (bulkStopRequested) { stopBulkAtSafePoint(); return; }
         if (bulkPaused) { updateBulkControlState("Paused — waiting to resume"); return; }
+        if (bulkPostLoadInProgress) return;
+        bulkPostLoadInProgress = true;
         io.execute(() -> {
             try {
                 String url = bulkEngine.nextPending();
-                if (bulkStopRequested) return;
+                if (bulkStopRequested || bulkPaused) { bulkPostLoadInProgress = false; return; }
                 if (url == null) {
+                    bulkPostLoadInProgress = false;
                     String counts = bulkEngine.counts();
                     runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
                     finishBulkUpload("Bulk queue completed. " + counts);
@@ -771,6 +775,7 @@ public class MainActivity extends Activity {
                 bulkEngine.markProcessing(url);
                 log("Processing Instagram post: " + url);
                 bulkDownloadInProgress = true;
+                bulkPostLoadInProgress = false;
                 JSONObject data = new JSONObject(bulkEngine.downloadPost(url));
                 bulkDownloadInProgress = false;
                 bulkCurrentFiles = data.getJSONArray("files");
@@ -784,6 +789,7 @@ public class MainActivity extends Activity {
                     (bulkCurrentCaption.isEmpty() ? "none" : "extracted/custom") + ".");
                 sendNextBulkChunk();
             } catch (Throwable error) {
+                bulkPostLoadInProgress = false;
                 bulkDownloadInProgress = false;
                 if (bulkStopRequested) stopBulkAtSafePoint();
                 else failCurrentBulkPost("Download/extraction failed: " + error.getMessage());
@@ -973,7 +979,7 @@ public class MainActivity extends Activity {
         bulkPaused = false;
         log("Bulk queue resumed.");
         updateBulkControlState("Resuming…");
-        if (bulkDownloadInProgress || bulkChunkInFlight) return;
+        if (bulkPostLoadInProgress || bulkDownloadInProgress || bulkChunkInFlight) return;
         if (bulkCurrentFiles == null) loadNextBulkPost();
         else sendNextBulkChunk();
     }
