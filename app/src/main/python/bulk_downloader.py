@@ -15,7 +15,7 @@ FORMAT = (
     "best[height=360]/best[height=480]/best[height=720]/"
     "best[height<=360]/best[height<=480]/best[height<=720]/best"
 )
-URL_PATTERN = re.compile(r"https?://(?:www\\.)?(?:instagram\\.com|instagr\\.am)/[^\\s<>]+", re.IGNORECASE)
+URL_PATTERN = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/[^\s<>]+", re.IGNORECASE)
 
 
 def extract_links(text):
