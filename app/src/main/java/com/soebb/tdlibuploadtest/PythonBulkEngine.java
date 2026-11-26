@@ -43,8 +43,12 @@ public final class PythonBulkEngine {
         PyObject value = module.callAttr("next_pending", databasePath);
         return value == null || "None".equals(value.toString()) ? null : value.toString();
     }
-    public String downloadPost(String url) {
-        return module.callAttr("download_post", url, downloadPath).toString();
+    public interface DownloadProgressListener {
+        void onProgress(String fileName, int percent);
+    }
+
+    public String downloadPost(String url, DownloadProgressListener listener) {
+        return module.callAttr("download_post", url, downloadPath, listener).toString();
     }
     public String sentChunks(String databasePath, String url) {
         return module.callAttr("sent_chunks_json", databasePath, url).toString();
