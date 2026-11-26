@@ -653,6 +653,16 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void refreshUploadStallTimeouts(UploadProgressTrack progressedTrack) {
+        ArrayList<UploadProgressTrack> tracks = new ArrayList<>();
+        if (progressedTrack != null) tracks.add(progressedTrack);
+        synchronized (uploadTracksByMessageId) {
+            for (UploadProgressTrack track : uploadTracksByMessageId.values())
+                if (!tracks.contains(track)) tracks.add(track);
+        }
+        for (UploadProgressTrack track : tracks) armUploadStallTimeout(track);
+    }
+
     private void removeUploadTrack(UploadProgressTrack track) {
         if (track == null) return;
         synchronized (track) {
@@ -786,7 +796,7 @@ public class MainActivity extends Activity {
             madeProgress = sent > track.lastUploadedBytes;
             if (madeProgress) track.lastUploadedBytes = sent;
         }
-        if (madeProgress) armUploadStallTimeout(track);
+        if (madeProgress) refreshUploadStallTimeouts(track);
         int percent = (int) Math.min(100L, sent * 100L / total);
         int step = percent / 10;
         if (step > track.lastLoggedStep) {
