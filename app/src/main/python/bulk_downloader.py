@@ -1,14 +1,12 @@
-"""Instagram bulk downloader engine.
-
-Runs inside Chaquopy. SQLite is deliberately owned by Python (sqlite3);
-Java/TDLib is responsible only for Telegram authorization and media delivery.
-"""
+"""Instagram bulk downloader with one SQLite database per imported link batch."""
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
-import re
+import time
+import uuid
 from pathlib import Path
 
 import yt_dlp
@@ -17,14 +15,30 @@ FORMAT = (
     "best[height=360]/best[height=480]/best[height=720]/"
     "best[height<=360]/best[height<=480]/best[height<=720]/best"
 )
+URL_PATTERN = re.compile(r"https?://(?:www\\.)?(?:instagram\\.com|instagr\\.am)/[^\\s<>]+", re.IGNORECASE)
+
+
+def extract_links(text):
+    urls, seen = [], set()
+    for match in URL_PATTERN.findall(text or ""):
+        url = match.rstrip(".,;)]}\\\"'")
+        if url and url not in seen:
+            urls.append(url)
+            seen.add(url)
+    return urls
 
 
 def _connect(database_path):
-    path = Path(database_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=30)
+    conn = sqlite3.connect(str(database_path), timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS batch_info (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS posts (
             url TEXT PRIMARY KEY,
@@ -49,56 +63,88 @@ def _connect(database_path):
     return conn
 
 
+def create_batch(database_directory, text, display_name=None):
+    urls = extract_links(text)
+    if not urls:
+        return {"created": False, "reason": "no_links", "received": 0}
+    root = Path(database_directory)
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    batch_id = uuid.uuid4().hex[:8]
+    safe_name = (display_name or "Links batch").strip() or "Links batch"
+    filename = f"batch_{stamp}_{batch_id}.sqlite3"
+    path = root / filename
+    conn = _connect(path)
+    try:
+        conn.execute("INSERT INTO batch_info(id, name) VALUES(1, ?)", (safe_name,))
+        conn.executemany(
+            "INSERT INTO posts(url, status) VALUES(?, 'pending')",
+            [(url,) for url in urls],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        "created": True, "database": str(path), "filename": filename,
+        "name": safe_name, "received": len(urls), "inserted": len(urls),
+    }
+
+
+def _counts(database_path):
+    conn = _connect(database_path)
+    try:
+        result = {name: 0 for name in ("pending", "processing", "done", "failed")}
+        for status, amount in conn.execute("SELECT status, COUNT(*) FROM posts GROUP BY status"):
+            result[status] = amount
+        result["total"] = sum(result.values())
+        row = conn.execute("SELECT name FROM batch_info WHERE id=1").fetchone()
+        result["name"] = row[0] if row else Path(database_path).stem
+        result["complete"] = result["total"] > 0 and result["done"] == result["total"]
+        return result
+    finally:
+        conn.close()
+
+
+def list_batches_json(database_directory):
+    root = Path(database_directory)
+    batches = []
+    if root.exists():
+        for path in sorted(root.glob("batch_*.sqlite3"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                info = _counts(path)
+                info["path"] = str(path)
+                info["filename"] = path.name
+                batches.append(info)
+            except sqlite3.Error:
+                continue
+    return json.dumps(batches, ensure_ascii=False)
+
+
+def counts_json(database_path):
+    return json.dumps(_counts(database_path), ensure_ascii=False)
+
+
+def delete_batch(database_path):
+    path = Path(database_path)
+    if not path.is_file():
+        return False
+    info = _counts(path)
+    if not info["complete"]:
+        return False
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            Path(str(path) + suffix).unlink(missing_ok=True)
+        except OSError:
+            return False
+    return True
+
+
 def initialize(database_path):
     conn = _connect(database_path)
     try:
         conn.execute("UPDATE posts SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'")
         conn.commit()
-        return counts(database_path)
-    finally:
-        conn.close()
-
-
-def import_links(database_path, text):
-    """Import newline-separated URLs; duplicate URLs are ignored."""
-    urls = []
-    seen = set()
-    # Extract Instagram URLs even when surrounded by captions or separators.
-    pattern = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/[^\s<>]+", re.IGNORECASE)
-    for match in pattern.findall(text or ""):
-        url = match.rstrip(".,;)]}\"'")
-        if url and url not in seen:
-            urls.append(url)
-            seen.add(url)
-    conn = _connect(database_path)
-    try:
-        before = conn.total_changes
-        conn.executemany(
-            "INSERT OR IGNORE INTO posts(url, status) VALUES(?, 'pending')",
-            [(url,) for url in urls],
-        )
-        inserted = conn.total_changes - before
-        if urls:
-            conn.executemany(
-                "UPDATE posts SET status='pending', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='failed'",
-                [(url,) for url in urls],
-            )
-        conn.commit()
-        return {"received": len(urls), "inserted": inserted, "duplicates": len(urls) - inserted}
-    finally:
-        conn.close()
-
-
-def counts(database_path):
-    conn = _connect(database_path)
-    try:
-        result = {name: 0 for name in ("pending", "processing", "done", "failed")}
-        for status, amount in conn.execute(
-            "SELECT status, COUNT(*) FROM posts GROUP BY status"
-        ):
-            result[status] = amount
-        result["total"] = sum(result.values())
-        return result
+        return _counts(database_path)
     finally:
         conn.close()
 
@@ -118,12 +164,37 @@ def mark_processing(database_path, url):
     conn = _connect(database_path)
     try:
         conn.execute("""
-            INSERT INTO posts(url, status, attempts) VALUES(?, 'processing', 1)
-            ON CONFLICT(url) DO UPDATE SET
-                status='processing', attempts=attempts+1,
-                last_error=NULL, updated_at=CURRENT_TIMESTAMP
+            UPDATE posts SET status='processing', attempts=attempts+1,
+                last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE url=?
         """, (url,))
         conn.commit()
+        row = conn.execute("SELECT attempts FROM posts WHERE url=?", (url,)).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def attempts_for(database_path, url):
+    conn = _connect(database_path)
+    try:
+        row = conn.execute("SELECT attempts FROM posts WHERE url=?", (url,)).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def retry_or_fail(database_path, url, error, max_attempts=3):
+    conn = _connect(database_path)
+    try:
+        row = conn.execute("SELECT attempts FROM posts WHERE url=?", (url,)).fetchone()
+        attempts = int(row[0]) if row else max_attempts
+        status = "pending" if attempts < max_attempts else "failed"
+        conn.execute(
+            "UPDATE posts SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE url=?",
+            (status, str(error)[:2000], url),
+        )
+        conn.commit()
+        return {"status": status, "attempts": attempts, "remaining": max(0, max_attempts-attempts)}
     finally:
         conn.close()
 
@@ -140,26 +211,31 @@ def mark_done(database_path, url):
         conn.close()
 
 
-def mark_pending(database_path, url):
+def mark_chunk_sent(database_path, url, chunk_no, signature):
     conn = _connect(database_path)
     try:
-        conn.execute(
-            "UPDATE posts SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='processing'",
-            (url,),
-        )
+        conn.execute("""
+            INSERT INTO chunks(url, chunk_no, signature, status)
+            VALUES(?, ?, ?, 'sent')
+            ON CONFLICT(url, chunk_no) DO UPDATE SET
+                signature=excluded.signature, status='sent',
+                updated_at=CURRENT_TIMESTAMP
+        """, (url, int(chunk_no), signature))
         conn.commit()
     finally:
         conn.close()
 
 
-def mark_failed(database_path, url, error):
+def get_sent_chunks(database_path, url):
     conn = _connect(database_path)
     try:
-        conn.execute(
-            "UPDATE posts SET status='failed', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE url=?",
-            (str(error)[:2000], url),
-        )
-        conn.commit()
+        return {
+            int(number): signature
+            for number, signature in conn.execute(
+                "SELECT chunk_no, signature FROM chunks WHERE url=? AND status='sent'",
+                (url,),
+            )
+        }
     finally:
         conn.close()
 
@@ -224,7 +300,7 @@ def _media_items(info):
 def inspect_post(url):
     options = {
         "quiet": True, "no_warnings": True, "skip_download": True,
-        "noplaylist": False, "retries": 5, "extract_flat": False,
+        "noplaylist": False, "retries": 2, "extract_flat": False,
     }
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -238,45 +314,14 @@ def inspect_post(url):
         (entry.get("description") for entry in entries if entry.get("description")), ""
     )
     return {
-        "title": info.get("title") or "",
-        "description": description or "",
-        "uploader": info.get("uploader") or "",
-        "media": media,
+        "title": info.get("title") or "", "description": description or "",
+        "uploader": info.get("uploader") or "", "media": media,
         "caption": (description or "").strip(),
     }
 
 
 def _chunk_signature(items):
     return hashlib.sha256("|".join(item["id"] for item in items).encode()).hexdigest()
-
-
-def get_sent_chunks(database_path, url):
-    conn = _connect(database_path)
-    try:
-        return {
-            int(number): signature
-            for number, signature in conn.execute(
-                "SELECT chunk_no, signature FROM chunks WHERE url=? AND status='sent'",
-                (url,),
-            )
-        }
-    finally:
-        conn.close()
-
-
-def mark_chunk_sent(database_path, url, chunk_no, signature):
-    conn = _connect(database_path)
-    try:
-        conn.execute("""
-            INSERT INTO chunks(url, chunk_no, signature, status)
-            VALUES(?, ?, ?, 'sent')
-            ON CONFLICT(url, chunk_no) DO UPDATE SET
-                signature=excluded.signature, status='sent',
-                updated_at=CURRENT_TIMESTAMP
-        """, (url, int(chunk_no), signature))
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def chunk_plan(media_items, sent_chunks_json="{}"):
@@ -287,11 +332,7 @@ def chunk_plan(media_items, sent_chunks_json="{}"):
         part = media_items[start:start + 10]
         signature = _chunk_signature(part)
         if sent.get(number) != signature:
-            plan.append({
-                "number": number,
-                "signature": signature,
-                "media": part,
-            })
+            plan.append({"number": number, "signature": signature, "media": part})
     return plan
 
 
@@ -300,16 +341,10 @@ def download_post(url, download_root):
     folder = Path(download_root) / key
     folder.mkdir(parents=True, exist_ok=True)
     options = {
-        "outtmpl": str(folder / "%(id)s.%(ext)s"),
-        "format": FORMAT,
-        "noplaylist": False,
-        "ignoreerrors": False,
-        "quiet": True,
-        "no_warnings": True,
-        "retries": 8,
-        "fragment_retries": 8,
-        "socket_timeout": 30,
-        "merge_output_format": "mp4",
+        "outtmpl": str(folder / "%(id)s.%(ext)s"), "format": FORMAT,
+        "noplaylist": False, "ignoreerrors": False, "quiet": True,
+        "no_warnings": True, "retries": 2, "fragment_retries": 2,
+        "socket_timeout": 30, "merge_output_format": "mp4",
     }
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -319,8 +354,7 @@ def download_post(url, download_root):
         paths = []
         for entry in entries:
             candidates = [
-                Path(item["filepath"])
-                for item in entry.get("requested_downloads", [])
+                Path(item["filepath"]) for item in entry.get("requested_downloads", [])
                 if item.get("filepath")
             ]
             if entry.get("filepath"):
@@ -346,16 +380,14 @@ def download_post(url, download_root):
             media.append({
                 "id": path.stem,
                 "is_video": path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".heic"),
-                "width": 0, "height": 0, "duration": 0,
-                "ext": path.suffix.lstrip(".")
+                "width": 0, "height": 0, "duration": 0, "ext": path.suffix.lstrip("."),
             })
     description = info.get("description") or next(
         (entry.get("description") for entry in entries if entry.get("description")), ""
     )
     return json.dumps({
-        "files": [str(path) for path in paths],
-        "media": media,
-        "caption": (description or "").strip()
+        "files": [str(path) for path in paths], "media": media,
+        "caption": (description or "").strip(),
     }, ensure_ascii=False)
 
 
@@ -364,26 +396,21 @@ def cleanup_post(url, download_root):
     shutil.rmtree(Path(download_root) / key, ignore_errors=True)
 
 
-# JSON wrappers keep the Chaquopy bridge simple and version-independent.
-def initialize_json(database_path):
-    return json.dumps(initialize(database_path))
+def create_batch_json(database_directory, text, display_name=None):
+    return json.dumps(create_batch(database_directory, text, display_name), ensure_ascii=False)
 
 
-def import_links_json(database_path, text):
-    return json.dumps(import_links(database_path, text))
+def list_batches(database_directory):
+    return list_batches_json(database_directory)
 
 
-def counts_json(database_path):
-    return json.dumps(counts(database_path))
+def delete_batch_json(database_path):
+    return json.dumps({"deleted": delete_batch(database_path)})
 
 
-def inspect_post_json(url):
-    return json.dumps(inspect_post(url), ensure_ascii=False)
+def sent_chunks_json(database_path, url):
+    return json.dumps({str(k): v for k, v in get_sent_chunks(database_path, url).items()})
 
 
-def chunk_plan_json(media_json, sent_chunks_json="{}"):
-    return json.dumps(chunk_plan(json.loads(media_json), sent_chunks_json), ensure_ascii=False)
-
-
-def get_sent_chunks_json(database_path, url):
-    return json.dumps({str(key): value for key, value in get_sent_chunks(database_path, url).items()})
+def chunk_plan_json(media_json, sent_chunks_json_value="{}"):
+    return json.dumps(chunk_plan(json.loads(media_json), sent_chunks_json_value), ensure_ascii=False)
