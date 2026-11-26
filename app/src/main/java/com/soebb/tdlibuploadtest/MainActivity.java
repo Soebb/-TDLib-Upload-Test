@@ -362,6 +362,8 @@ public class MainActivity extends Activity {
                 } else {
                     selectedDatabasePath=""; queueSummary.setText("No link databases yet. Paste links or import a TXT file.");
                     deleteDatabaseButton.setVisibility(View.GONE);
+                    reviewUncertainButton.setText("Review uncertain uploads (0)");
+                    reviewUncertainButton.setEnabled(false);
                 }
             });
         } catch (Throwable error) { log("Could not list link databases: " + error.getMessage()); }
