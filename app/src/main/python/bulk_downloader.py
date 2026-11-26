@@ -184,7 +184,7 @@ def attempts_for(database_path, url):
         conn.close()
 
 
-def retry_or_fail(database_path, url, error, max_attempts=3):
+def retry_or_fail(database_path, url, error, max_attempts=4):
     conn = _connect(database_path)
     try:
         row = conn.execute("SELECT attempts FROM posts WHERE url=?", (url,)).fetchone()
