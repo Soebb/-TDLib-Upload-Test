@@ -251,7 +251,6 @@ def review_posts_json(database_path):
 def resolve_review(database_path, url, uploaded):
     conn = _connect(database_path)
     try:
-        status = 'done' if uploaded else 'pending'
         if uploaded:
             conn.execute(
                 "UPDATE posts SET status='done', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='review'",
