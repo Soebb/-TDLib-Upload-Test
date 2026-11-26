@@ -59,7 +59,7 @@ public final class PythonBulkEngine {
         return module.callAttr("attempts_for", databasePath, url).toInt();
     }
     public String retryOrFail(String databasePath, String url, String error) {
-        return module.callAttr("retry_or_fail", databasePath, url, error, 3).toString();
+        return module.callAttr("retry_or_fail", databasePath, url, error, 4).toString();
     }
     public void markDone(String databasePath, String url) {
         module.callAttr("mark_done", databasePath, url);
