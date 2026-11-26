@@ -660,8 +660,9 @@ public class MainActivity extends Activity {
         int percent = (int) Math.min(100L, sent * 100L / total);
         int step = percent / 10;
         if (step > track.lastLoggedStep) {
+            for (int completedStep = track.lastLoggedStep + 1; completedStep <= step; completedStep++)
+                log("Upload [" + track.name + "]: " + (completedStep * 10) + "%");
             track.lastLoggedStep = step;
-            if (step > 0) log("Upload [" + track.name + "]: " + (step * 10) + "%");
         }
         runOnUiThread(() -> {
             uploadProgress.setVisibility(View.VISIBLE);
@@ -683,9 +684,12 @@ public class MainActivity extends Activity {
     private void finishUploadTrack(int fileId) {
         UploadProgressTrack track;
         synchronized (uploadTracksById) { track = uploadTracksById.remove(fileId); }
-        if (track != null && track.lastLoggedStep < 10) {
+        if (track == null) return;
+        synchronized (uploadTracksByPath) { uploadTracksByPath.values().remove(track); }
+        if (track.lastLoggedStep < 10) {
+            for (int completedStep = track.lastLoggedStep + 1; completedStep <= 10; completedStep++)
+                log("Upload [" + track.name + "]: " + (completedStep * 10) + "%");
             track.lastLoggedStep = 10;
-            log("Upload [" + track.name + "]: 100%");
         }
     }
 
