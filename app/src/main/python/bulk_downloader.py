@@ -140,6 +140,18 @@ def mark_done(database_path, url):
         conn.close()
 
 
+def mark_pending(database_path, url):
+    conn = _connect(database_path)
+    try:
+        conn.execute(
+            "UPDATE posts SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE url=? AND status='processing'",
+            (url,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def mark_failed(database_path, url, error):
     conn = _connect(database_path)
     try:
