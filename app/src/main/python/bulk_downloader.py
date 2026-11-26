@@ -99,6 +99,7 @@ def _counts(database_path):
         result["total"] = sum(result.values())
         row = conn.execute("SELECT name FROM batch_info WHERE id=1").fetchone()
         result["name"] = row[0] if row else Path(database_path).stem
+        result["processed"] = result["total"] > 0 and result["pending"] == 0 and result["processing"] == 0
         result["complete"] = result["total"] > 0 and result["done"] == result["total"]
         return result
     finally:
@@ -129,7 +130,7 @@ def delete_batch(database_path):
     if not path.is_file():
         return False
     info = _counts(path)
-    if not info["complete"]:
+    if not info["processed"]:
         return False
     for suffix in ("", "-wal", "-shm"):
         try:
