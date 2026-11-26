@@ -607,10 +607,14 @@ public class MainActivity extends Activity {
                 uploadButton.setEnabled(!bulkUploadRunning);
             });
             log("UPLOAD SUCCESS. Telegram message ID: " + message.id);
-            markUploadMessageComplete(message);
+            // TDLib replaces the temporary send-message ID with a final ID on success.
+            // Upload tracking and the bulk awaiting set are keyed by the temporary ID.
+            long completedTemporaryMessageId = succeeded.oldMessageId;
+            markUploadMessageComplete(completedTemporaryMessageId);
             if (bulkUploadRunning) {
                 synchronized (bulkAwaitingMessageIds) {
-                    if (!bulkAwaitingMessageIds.remove(message.id)) bulkSucceededBeforeResponse.add(message.id);
+                    if (!bulkAwaitingMessageIds.remove(completedTemporaryMessageId))
+                        bulkSucceededBeforeResponse.add(completedTemporaryMessageId);
                 }
                 completeBulkChunkIfReady();
             }
@@ -814,12 +818,12 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void markUploadMessageComplete(TdApi.Message message) {
-        if (message == null) return;
+    private void markUploadMessageComplete(long messageId) {
+        if (messageId == 0L) return;
         UploadProgressTrack track;
-        synchronized (uploadTracksByMessageId) { track = uploadTracksByMessageId.remove(message.id); }
+        synchronized (uploadTracksByMessageId) { track = uploadTracksByMessageId.remove(messageId); }
         if (track != null) finishUploadTrack(track);
-        else synchronized (completedUploadMessageIds) { completedUploadMessageIds.add(message.id); }
+        else synchronized (completedUploadMessageIds) { completedUploadMessageIds.add(messageId); }
     }
 
     private void finishUploadTrack(UploadProgressTrack track) {
