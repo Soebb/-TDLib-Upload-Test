@@ -1212,7 +1212,7 @@ public class MainActivity extends Activity {
                         for (int messageIndex = 0; messageIndex < sentMessages.length; messageIndex++) {
                             TdApi.Message sent = sentMessages[messageIndex];
                             int fileIndex = chunkNumber * 10 + messageIndex;
-                            if (fileIndex < bulkCurrentFiles.length()) trackMessageUpload(sent, new File(bulkCurrentFiles.getString(fileIndex)));
+                            if (fileIndex < bulkCurrentFiles.length()) trackMessageUpload(sent, new File(bulkCurrentFiles.optString(fileIndex)));
                             if (!bulkSucceededBeforeResponse.remove(sent.id)) bulkAwaitingMessageIds.add(sent.id);
                         }
                     } else {
