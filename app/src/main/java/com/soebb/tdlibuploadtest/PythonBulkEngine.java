@@ -58,6 +58,9 @@ public final class PythonBulkEngine {
     public int attemptsFor(String databasePath, String url) {
         return module.callAttr("attempts_for", databasePath, url).toInt();
     }
+    public void releaseProcessing(String databasePath, String url) {
+        module.callAttr("release_processing", databasePath, url);
+    }
     public String retryOrFail(String databasePath, String url, String error) {
         return module.callAttr("retry_or_fail", databasePath, url, error, 4).toString();
     }
