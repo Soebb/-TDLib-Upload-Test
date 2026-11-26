@@ -49,6 +49,9 @@ public class MainActivity extends Activity {
     private SharedPreferences preferences;
     private PythonBulkEngine bulkEngine;
     private volatile boolean bulkUploadRunning = false;
+    private volatile boolean bulkPaused = false;
+    private volatile boolean bulkStopRequested = false;
+    private Button pauseButton, resumeButton, stopButton;
     private long bulkChatId = 0;
     private String bulkCurrentUrl = "";
     private String bulkCurrentCaption = "";
@@ -133,6 +136,18 @@ public class MainActivity extends Activity {
         button(root,"Upload a local file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
         uploadButton = button(root,"Start uploading",v -> startBulkUpload());
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        pauseButton = new Button(this); pauseButton.setText("Pause"); pauseButton.setEnabled(false);
+        pauseButton.setOnClickListener(v -> pauseBulkUpload());
+        controls.addView(pauseButton, new LinearLayout.LayoutParams(0, -2, 1));
+        resumeButton = new Button(this); resumeButton.setText("Resume"); resumeButton.setEnabled(false);
+        resumeButton.setOnClickListener(v -> resumeBulkUpload());
+        controls.addView(resumeButton, new LinearLayout.LayoutParams(0, -2, 1));
+        stopButton = new Button(this); stopButton.setText("Stop"); stopButton.setEnabled(false);
+        stopButton.setOnClickListener(v -> stopBulkUpload());
+        controls.addView(stopButton, new LinearLayout.LayoutParams(0, -2, 1));
+        root.addView(controls);
         uploadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         uploadProgress.setMax(100);
         uploadProgress.setVisibility(View.GONE);
@@ -382,6 +397,7 @@ public class MainActivity extends Activity {
         } else if(object instanceof TdApi.UpdateMessageSendSucceeded) {
             TdApi.Message message = ((TdApi.UpdateMessageSendSucceeded)object).message;
             uploadInProgress = false;
+            if (!bulkUploadRunning) stopUploadForegroundService();
             runOnUiThread(() -> {
                 uploadProgress.setProgress(100);
                 uploadProgressText.setText("Upload complete: 100%");
@@ -397,6 +413,7 @@ public class MainActivity extends Activity {
         } else if(object instanceof TdApi.UpdateMessageSendFailed) {
             TdApi.UpdateMessageSendFailed failed = (TdApi.UpdateMessageSendFailed)object;
             uploadInProgress = false;
+            if (!bulkUploadRunning) stopUploadForegroundService();
             runOnUiThread(() -> {
                 uploadProgress.setIndeterminate(false);
                 uploadProgressText.setText("Upload failed: " + failed.error.message);
@@ -579,6 +596,7 @@ public class MainActivity extends Activity {
         if(username.isEmpty()) { log("UPLOAD BLOCKED: enter a public channel username."); return; }
 
         uploadInProgress = true;
+        startUploadForegroundService();
         uploadFileId = 0;
         lastLoggedProgressStep = -1;
         uploadTotalBytes = chosenFile.length();
@@ -691,8 +709,14 @@ public class MainActivity extends Activity {
         final String pastedLinks = linksInput.getText().toString();
         bulkCaptionOverride = captionInput.getText().toString().trim();
         bulkUploadRunning = true;
+        bulkPaused = false;
+        bulkStopRequested = false;
+        startUploadForegroundService();
         runOnUiThread(() -> {
             uploadButton.setEnabled(false);
+            pauseButton.setEnabled(true);
+            resumeButton.setEnabled(false);
+            stopButton.setEnabled(true);
             uploadProgress.setVisibility(View.VISIBLE);
             uploadProgress.setIndeterminate(true);
             uploadProgressText.setText("Preparing link queue...");
@@ -725,6 +749,8 @@ public class MainActivity extends Activity {
     }
 
     private void loadNextBulkPost() {
+        if (bulkStopRequested) { stopBulkAtSafePoint(); return; }
+        if (bulkPaused) { updateBulkControlState("Paused — waiting to resume"); return; }
         io.execute(() -> {
             try {
                 String url = bulkEngine.nextPending();
@@ -754,6 +780,8 @@ public class MainActivity extends Activity {
 
     private void sendNextBulkChunk() {
         if (!bulkUploadRunning) return;
+        if (bulkStopRequested) { stopBulkAtSafePoint(); return; }
+        if (bulkPaused) { updateBulkControlState("Paused — current batch completed"); return; }
         if (bulkChunkIndex >= bulkChunkPlan.length()) {
             final String completedUrl = bulkCurrentUrl;
             io.execute(() -> {
@@ -900,10 +928,84 @@ public class MainActivity extends Activity {
         });
     }
 
+
+    private void updateBulkControlState(String message) {
+        runOnUiThread(() -> {
+            pauseButton.setEnabled(bulkUploadRunning && !bulkPaused);
+            resumeButton.setEnabled(bulkUploadRunning && bulkPaused);
+            stopButton.setEnabled(bulkUploadRunning);
+            uploadProgressText.setText(message);
+        });
+    }
+
+    private void pauseBulkUpload() {
+        if (!bulkUploadRunning || bulkPaused) return;
+        bulkPaused = true;
+        log("Pause requested. The current download or Telegram batch will finish safely before the queue pauses.");
+        updateBulkControlState("Pausing…");
+    }
+
+    private void resumeBulkUpload() {
+        if (!bulkUploadRunning || !bulkPaused) return;
+        bulkPaused = false;
+        log("Bulk queue resumed.");
+        updateBulkControlState("Resuming…");
+        if (bulkCurrentFiles == null) loadNextBulkPost();
+        else sendNextBulkChunk();
+    }
+
+    private void stopBulkUpload() {
+        if (!bulkUploadRunning) return;
+        bulkStopRequested = true;
+        bulkPaused = false;
+        log("Stop requested. The current Telegram batch, if already sending, will finish before the queue stops.");
+        updateBulkControlState("Stopping after current safe point…");
+        if (bulkCurrentFiles == null && !uploadInProgress) stopBulkAtSafePoint();
+        else if (bulkChunkPlan != null && bulkChunkIndex >= bulkChunkPlan.length()) stopBulkAtSafePoint();
+    }
+
+    private void stopBulkAtSafePoint() {
+        if (!bulkUploadRunning) return;
+        final String url = bulkCurrentUrl;
+        io.execute(() -> {
+            try {
+                if (url != null && !url.isEmpty()) bulkEngine.markPending(url);
+            } catch (Throwable error) {
+                log("Could not return the interrupted link to pending: " + error.getMessage());
+            }
+            bulkCurrentUrl = "";
+            bulkCurrentFiles = null;
+            bulkCurrentMedia = null;
+            bulkChunkPlan = null;
+            finishBulkUpload("Bulk queue stopped. Remaining links are still saved in SQLite.");
+        });
+    }
+
+    private void startUploadForegroundService() {
+        try {
+            Intent intent = new Intent(this, UploadForegroundService.class);
+            if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(intent);
+            else startService(intent);
+        } catch (Throwable error) {
+            log("Could not start background upload service: " + error.getMessage());
+        }
+    }
+
+    private void stopUploadForegroundService() {
+        try { stopService(new Intent(this, UploadForegroundService.class)); }
+        catch (Throwable ignored) {}
+    }
+
     private void finishBulkUpload(String message) {
         bulkUploadRunning = false;
+        bulkPaused = false;
+        bulkStopRequested = false;
+        stopUploadForegroundService();
         runOnUiThread(() -> {
             uploadButton.setEnabled(true);
+            pauseButton.setEnabled(false);
+            resumeButton.setEnabled(false);
+            stopButton.setEnabled(false);
             uploadProgress.setIndeterminate(false);
             uploadProgressText.setText(message);
         });
