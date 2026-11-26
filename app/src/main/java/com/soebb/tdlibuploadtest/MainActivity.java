@@ -1023,9 +1023,9 @@ public class MainActivity extends Activity {
                 int attempts = retry.optInt("attempts", 3);
                 String state = retry.optString("status", "failed");
                 refreshBatchListOnIo(bulkDatabasePath);
-                log(reason + " URL: " + failedUrl + " (attempt " + attempts + "/3).");
+                log(reason + " URL: " + failedUrl + " (attempt " + attempts + "/4).");
                 if ("pending".equals(state)) {
-                    long delay = attempts == 1 ? 5000L : 15000L;
+                    long delay = attempts == 1 ? 5000L : (attempts == 2 ? 15000L : 30000L);
                     log("Retry scheduled in " + (delay/1000) + " seconds.");
                     bulkRetryRunnable = () -> {
                         bulkRetryRunnable = null;
@@ -1034,7 +1034,7 @@ public class MainActivity extends Activity {
                     };
                     mainHandler.postDelayed(bulkRetryRunnable, delay);
                 } else {
-                    log("Link marked failed after 3 attempts: " + failedUrl);
+                    log("Link marked failed after the initial attempt and 3 retries: " + failedUrl);
                     bulkFailureHandling = false; loadNextBulkPost();
                 }
             } catch (Throwable error) {
