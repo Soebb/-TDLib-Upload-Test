@@ -429,7 +429,11 @@ def download_post(url, download_root, progress_listener=None):
             path = paths[len(media)]
             media.append({
                 "id": path.stem,
-                "is_video": path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".heic"),
+                "is_video": path.suffix.lower() in (
+                    ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi",
+                    ".3gp", ".mpeg", ".mpg", ".ts", ".mts", ".m2ts",
+                    ".ogv", ".vob", ".flv", ".wmv",
+                ),
                 "width": 0, "height": 0, "duration": 0, "ext": path.suffix.lstrip("."),
             })
     description = info.get("description") or next(
