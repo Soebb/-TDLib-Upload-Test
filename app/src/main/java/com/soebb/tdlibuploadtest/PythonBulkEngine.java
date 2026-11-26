@@ -71,6 +71,15 @@ public final class PythonBulkEngine {
     public void markDone(String databasePath, String url) {
         module.callAttr("mark_done", databasePath, url);
     }
+    public void markReview(String databasePath, String url, String error) {
+        module.callAttr("mark_review", databasePath, url, error);
+    }
+    public String reviewPosts(String databasePath) {
+        return module.callAttr("review_posts", databasePath).toString();
+    }
+    public void resolveReview(String databasePath, String url, boolean uploaded) {
+        module.callAttr("resolve_review", databasePath, url, uploaded);
+    }
     public void markChunkSent(String databasePath, String url, int number, String signature) {
         module.callAttr("mark_chunk_sent", databasePath, url, number, signature);
     }
