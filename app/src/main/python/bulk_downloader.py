@@ -354,15 +354,45 @@ def chunk_plan(media_items, sent_chunks_json="{}"):
     return plan
 
 
-def download_post(url, download_root):
+def download_post(url, download_root, progress_listener=None):
     key = hashlib.sha1(url.encode()).hexdigest()[:16]
     folder = Path(download_root) / key
     folder.mkdir(parents=True, exist_ok=True)
+    progress_steps = {}
+
+    def progress_hook(data):
+        if progress_listener is None:
+            return
+        status = data.get("status")
+        info = data.get("info_dict") or {}
+        filename = Path(data.get("filename") or data.get("tmpfilename") or info.get("id") or "media").name
+        key = str(info.get("id") or filename)
+        if status == "downloading":
+            total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            downloaded = data.get("downloaded_bytes") or 0
+            if total:
+                percent = int(min(100, downloaded * 100 / max(1, total)))
+            else:
+                fragment_index = data.get("fragment_index")
+                fragment_count = data.get("fragment_count")
+                if fragment_index and fragment_count:
+                    percent = int(min(100, fragment_index * 100 / max(1, fragment_count)))
+                else:
+                    return
+            step = percent // 10
+            if step > progress_steps.get(key, 0):
+                progress_steps[key] = step
+                progress_listener.onProgress(filename, min(100, step * 10))
+        elif status == "finished" and progress_steps.get(key, 0) < 10:
+            progress_steps[key] = 10
+            progress_listener.onProgress(filename, 100)
+
     options = {
         "outtmpl": str(folder / "%(id)s.%(ext)s"), "format": FORMAT,
         "noplaylist": False, "ignoreerrors": False, "quiet": True,
         "no_warnings": True, "retries": 2, "fragment_retries": 2,
         "socket_timeout": 30, "merge_output_format": "mp4",
+        "progress_hooks": [progress_hook] if progress_listener is not None else [],
     }
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)
