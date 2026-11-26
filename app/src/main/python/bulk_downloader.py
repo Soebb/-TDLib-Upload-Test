@@ -143,6 +143,7 @@ def initialize(database_path):
     conn = _connect(database_path)
     try:
         conn.execute("UPDATE posts SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'")
+        conn.execute("UPDATE posts SET status='pending', attempts=0, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE status='failed'")
         conn.commit()
         return _counts(database_path)
     finally:
