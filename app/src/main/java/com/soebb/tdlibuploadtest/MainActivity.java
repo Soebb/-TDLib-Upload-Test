@@ -48,7 +48,8 @@ public class MainActivity extends Activity {
     private int lastLoggedProgressStep = -1;
     private final HashMap<Integer, UploadProgressTrack> uploadTracksById = new HashMap<>();
     private final HashMap<String, UploadProgressTrack> uploadTracksByPath = new HashMap<>();
-    private final HashSet<Integer> completedUploadFileIds = new HashSet<>();
+    private final HashMap<Long, UploadProgressTrack> uploadTracksByMessageId = new HashMap<>();
+    private final HashSet<Long> completedUploadMessageIds = new HashSet<>();
     private static final class UploadProgressTrack {
         final String name;
         final long totalBytes;
@@ -641,9 +642,10 @@ public class MainActivity extends Activity {
         }
         if (track != null) {
             synchronized (uploadTracksById) { uploadTracksById.put(fileId, track); }
+            synchronized (uploadTracksByMessageId) { uploadTracksByMessageId.put(message.id, track); }
             boolean completed;
-            synchronized (completedUploadFileIds) { completed = completedUploadFileIds.remove(fileId); }
-            if (completed) finishUploadTrack(fileId);
+            synchronized (completedUploadMessageIds) { completed = completedUploadMessageIds.remove(message.id); }
+            if (completed) finishUploadTrack(track);
         }
     }
 
@@ -673,19 +675,18 @@ public class MainActivity extends Activity {
     }
 
     private void markUploadMessageComplete(TdApi.Message message) {
-        int fileId = uploadFileIdForMessage(message);
-        if (fileId == 0) return;
-        boolean found;
-        synchronized (uploadTracksById) { found = uploadTracksById.containsKey(fileId); }
-        if (found) finishUploadTrack(fileId);
-        else synchronized (completedUploadFileIds) { completedUploadFileIds.add(fileId); }
+        if (message == null) return;
+        UploadProgressTrack track;
+        synchronized (uploadTracksByMessageId) { track = uploadTracksByMessageId.remove(message.id); }
+        if (track != null) finishUploadTrack(track);
+        else synchronized (completedUploadMessageIds) { completedUploadMessageIds.add(message.id); }
     }
 
-    private void finishUploadTrack(int fileId) {
-        UploadProgressTrack track;
-        synchronized (uploadTracksById) { track = uploadTracksById.remove(fileId); }
+    private void finishUploadTrack(UploadProgressTrack track) {
         if (track == null) return;
+        synchronized (uploadTracksById) { uploadTracksById.values().remove(track); }
         synchronized (uploadTracksByPath) { uploadTracksByPath.values().remove(track); }
+        synchronized (uploadTracksByMessageId) { uploadTracksByMessageId.values().remove(track); }
         if (track.lastLoggedStep < 10) {
             for (int completedStep = track.lastLoggedStep + 1; completedStep <= 10; completedStep++)
                 log("Upload [" + track.name + "]: " + (completedStep * 10) + "%");
