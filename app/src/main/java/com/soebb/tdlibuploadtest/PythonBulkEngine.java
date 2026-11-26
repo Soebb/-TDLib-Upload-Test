@@ -33,9 +33,7 @@ public final class PythonBulkEngine {
         return module.callAttr("list_batches", databaseDirectory).toString();
     }
     public boolean deleteBatch(String path) {
-        PyObject result = module.callAttr("delete_batch_json", path);
-        try { return result.callAttr("get", "deleted").toBoolean(); }
-        catch (Throwable ignored) { return result.toString().contains("\\"deleted\\": true"); }
+        return module.callAttr("delete_batch", path).toBoolean();
     }
     public void initialize(String databasePath) { module.callAttr("initialize", databasePath); }
     public String counts(String databasePath) {
