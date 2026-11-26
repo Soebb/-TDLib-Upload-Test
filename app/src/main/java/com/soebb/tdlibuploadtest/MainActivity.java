@@ -30,15 +30,15 @@ public class MainActivity extends Activity {
     private Spinner databaseSpinner;
     private Button deleteDatabaseButton;
     private final ArrayList<BatchItem> databaseItems = new ArrayList<>();
-    private String selectedDatabasePath = "";
-    private String bulkDatabasePath = "";
+    private volatile String selectedDatabasePath = "";
+    private volatile String bulkDatabasePath = "";
     private volatile boolean bulkFailureHandling = false;
     private Runnable bulkRetryRunnable;
     private Button resendButton, connectButton, submitCodeButton, uploadButton;
     private ProgressBar uploadProgress;
     private TextView uploadProgressText;
     private final StringBuilder logBuffer = new StringBuilder();
-    private boolean isSignedIn = false;
+    private volatile boolean isSignedIn = false;
     private boolean uploadInProgress = false;
     private int uploadFileId = 0;
     private long uploadTotalBytes = 0;
@@ -356,8 +356,10 @@ public class MainActivity extends Activity {
                 String path=created.getString("database"); selectedDatabasePath=path;
                 log("Created a new SQLite database with " + created.optInt("received") + " unique link(s): " + created.optString("filename"));
                 refreshBatchListOnIo(path);
-                runOnUiThread(() -> linksInput.setText(""));
-                if (startAfterCreate) beginBulkUpload(path);
+                runOnUiThread(() -> {
+                    linksInput.setText("");
+                    if (startAfterCreate) beginBulkUpload(path);
+                });
             } catch (Throwable error) { log("Could not create link database: " + error.getMessage()); }
         });
     }
