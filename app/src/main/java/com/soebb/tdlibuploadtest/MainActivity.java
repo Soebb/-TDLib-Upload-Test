@@ -1277,7 +1277,10 @@ public class MainActivity extends Activity {
                 bulkCurrentMedia = data.getJSONArray("media");
                 if (bulkCurrentFiles.length() == 0 || bulkCurrentFiles.length() != bulkCurrentMedia.length())
                     throw new IllegalStateException("Downloaded file list does not match extracted media metadata.");
-                bulkCurrentCaption = bulkCaptionOverride.isEmpty() ? data.optString("caption", "") : bulkCaptionOverride;
+                String postDescription = bulkCaptionOverride.isEmpty()
+                    ? data.optString("caption", "").trim()
+                    : bulkCaptionOverride;
+                bulkCurrentCaption = buildInstagramCaption(url, postDescription);
                 bulkChunkPlan = new JSONArray(bulkEngine.planChunks(bulkCurrentMedia.toString(), bulkEngine.sentChunks(bulkDatabasePath, url)));
                 bulkChunkIndex = 0;
                 log("Downloaded " + bulkCurrentFiles.length() + " media item(s). Caption: " +
@@ -1405,6 +1408,13 @@ public class MainActivity extends Activity {
                 failCurrentBulkPost("Could not save completed media batch: " + error.getMessage());
             }
         });
+    }
+
+    private String buildInstagramCaption(String postUrl, String description) {
+        String link = postUrl == null ? "" : postUrl.trim();
+        String text = description == null ? "" : description.trim();
+        if (link.isEmpty()) return text;
+        return text.isEmpty() ? link : link + "\n" + text;
     }
 
     private TdApi.InputMessageContent buildBulkContent(File file, JSONObject meta, String captionText) throws Exception {
