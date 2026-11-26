@@ -51,6 +51,8 @@ public class MainActivity extends Activity {
     private volatile boolean bulkUploadRunning = false;
     private volatile boolean bulkPaused = false;
     private volatile boolean bulkStopRequested = false;
+    private volatile boolean bulkDownloadInProgress = false;
+    private volatile boolean bulkChunkInFlight = false;
     private Button pauseButton, resumeButton, stopButton;
     private long bulkChatId = 0;
     private String bulkCurrentUrl = "";
@@ -613,6 +615,7 @@ public class MainActivity extends Activity {
             if(result instanceof TdApi.Error) {
                 TdApi.Error error = (TdApi.Error)result;
                 uploadInProgress = false;
+                stopUploadForegroundService();
                 runOnUiThread(() -> {
                     uploadButton.setEnabled(true);
                     uploadProgress.setIndeterminate(false);
@@ -623,6 +626,7 @@ public class MainActivity extends Activity {
             }
             if(!(result instanceof TdApi.Chat)) {
                 uploadInProgress = false;
+                stopUploadForegroundService();
                 runOnUiThread(() -> uploadButton.setEnabled(true));
                 log("CHANNEL LOOKUP FAILED: unexpected TDLib response " + result.getClass().getSimpleName());
                 return;
@@ -760,10 +764,13 @@ public class MainActivity extends Activity {
                     finishBulkUpload("Bulk queue completed. " + counts);
                     return;
                 }
+                if (bulkPaused) return;
                 bulkCurrentUrl = url;
                 bulkEngine.markProcessing(url);
                 log("Processing Instagram post: " + url);
+                bulkDownloadInProgress = true;
                 JSONObject data = new JSONObject(bulkEngine.downloadPost(url));
+                bulkDownloadInProgress = false;
                 bulkCurrentFiles = data.getJSONArray("files");
                 bulkCurrentMedia = data.getJSONArray("media");
                 if (bulkCurrentFiles.length() == 0 || bulkCurrentFiles.length() != bulkCurrentMedia.length())
@@ -774,7 +781,11 @@ public class MainActivity extends Activity {
                 log("Downloaded " + bulkCurrentFiles.length() + " media item(s). Caption: " +
                     (bulkCurrentCaption.isEmpty() ? "none" : "extracted/custom") + ".");
                 sendNextBulkChunk();
-            } catch (Throwable error) { failCurrentBulkPost("Download/extraction failed: " + error.getMessage()); }
+            } catch (Throwable error) {
+                bulkDownloadInProgress = false;
+                if (bulkStopRequested) stopBulkAtSafePoint();
+                else failCurrentBulkPost("Download/extraction failed: " + error.getMessage());
+            }
         });
     }
 
@@ -829,8 +840,10 @@ public class MainActivity extends Activity {
             TdApi.Function<?> request = contents.length == 1
                 ? new TdApi.SendMessage(bulkChatId, null, null, null, null, contents[0])
                 : new TdApi.SendMessageAlbum(bulkChatId, null, null, null, contents);
+            bulkChunkInFlight = true;
             client.send(request, response -> {
                 if (response instanceof TdApi.Error) {
+                    bulkChunkInFlight = false;
                     failCurrentBulkPost("TDLib rejected media batch: " + ((TdApi.Error) response).message);
                     return;
                 }
@@ -865,6 +878,7 @@ public class MainActivity extends Activity {
         io.execute(() -> {
             try {
                 bulkEngine.markChunkSent(url, number, signature);
+                bulkChunkInFlight = false;
                 bulkChunkIndex++;
                 sendNextBulkChunk();
             } catch (Throwable error) {
@@ -914,6 +928,7 @@ public class MainActivity extends Activity {
     }
 
     private void failCurrentBulkPost(String reason) {
+        bulkChunkInFlight = false;
         final String failedUrl = bulkCurrentUrl;
         synchronized (bulkAwaitingMessageIds) {
             bulkAwaitingMessageIds.clear();
@@ -950,6 +965,7 @@ public class MainActivity extends Activity {
         bulkPaused = false;
         log("Bulk queue resumed.");
         updateBulkControlState("Resuming…");
+        if (bulkDownloadInProgress || bulkChunkInFlight) return;
         if (bulkCurrentFiles == null) loadNextBulkPost();
         else sendNextBulkChunk();
     }
@@ -1036,6 +1052,6 @@ public class MainActivity extends Activity {
         if (resendCountdown != null) mainHandler.removeCallbacks(resendCountdown);
         saveForm();
         super.onDestroy();
-        io.shutdown();
+        if (!bulkUploadRunning && !uploadInProgress) io.shutdown();
     }
 }
