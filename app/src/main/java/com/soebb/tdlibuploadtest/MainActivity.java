@@ -665,11 +665,12 @@ public class MainActivity extends Activity {
                 log("Upload [" + track.name + "]: " + (completedStep * 10) + "%");
             track.lastLoggedStep = step;
         }
+        final String trackedFileName = track.name;
         runOnUiThread(() -> {
             uploadProgress.setVisibility(View.VISIBLE);
             uploadProgress.setIndeterminate(false);
             uploadProgress.setProgress(percent);
-            uploadProgressText.setText("Uploading " + track.name + ": " + percent + "%");
+            uploadProgressText.setText("Uploading " + trackedFileName + ": " + percent + "%");
         });
     }
 
@@ -1169,7 +1170,7 @@ public class MainActivity extends Activity {
             for (int i = 0; i < items.length(); i++) {
                 int fileIndex = chunkNumber * 10 + i;
                 if (fileIndex >= bulkCurrentFiles.length()) throw new IllegalStateException("Chunk references a missing downloaded file.");
-                File mediaFile = new File(bulkCurrentFiles.getString(fileIndex));
+                File mediaFile = new File(bulkCurrentFiles.optString(fileIndex));
                 if (!mediaFile.isFile()) throw new FileNotFoundException(mediaFile.getAbsolutePath());
                 totalBytes += mediaFile.length();
                 trackUploadFile(mediaFile);
@@ -1204,7 +1205,7 @@ public class MainActivity extends Activity {
                     if (response instanceof TdApi.Message) {
                         TdApi.Message sent = (TdApi.Message) response;
                         long id = sent.id;
-                        trackMessageUpload(sent, new File(bulkCurrentFiles.getString(chunkNumber * 10)));
+                        trackMessageUpload(sent, new File(bulkCurrentFiles.optString(chunkNumber * 10)));
                         if (!bulkSucceededBeforeResponse.remove(id)) bulkAwaitingMessageIds.add(id);
                     } else if (response instanceof TdApi.Messages) {
                         TdApi.Message[] sentMessages = ((TdApi.Messages) response).messages;
