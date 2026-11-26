@@ -396,7 +396,7 @@ public class MainActivity extends Activity {
                 String[] labels = new String[posts.length()];
                 for (int i = 0; i < posts.length(); i++) {
                     JSONObject post = posts.getJSONObject(i);
-                    labels[i] = post.optString("url") + "\\n" + post.optString("error");
+                    labels[i] = post.optString("url") + "\n" + post.optString("error");
                 }
                 runOnUiThread(() -> new android.app.AlertDialog.Builder(this)
                     .setTitle("Uploads needing review")
