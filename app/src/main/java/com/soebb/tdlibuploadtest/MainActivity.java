@@ -28,7 +28,8 @@ public class MainActivity extends Activity {
     private EditText apiId, apiHash, phone, code, channel, captionInput, linksInput;
     private TextView status, selected, codeInfoView, accountState, queueSummary;
     private Spinner databaseSpinner;
-    private Button deleteDatabaseButton;
+    private Button deleteDatabaseButton, deleteCompletedDatabasesButton;
+    private final ArrayList<BatchItem> successfulDatabaseItems = new ArrayList<>();
     private final ArrayList<BatchItem> databaseItems = new ArrayList<>();
     private volatile String selectedDatabasePath = "";
     private volatile String bulkDatabasePath = "";
@@ -145,6 +146,7 @@ public class MainActivity extends Activity {
         deleteDatabaseButton.setVisibility(View.GONE);
         deleteDatabaseButton.setOnClickListener(v -> deleteSelectedDatabase());
         databaseRow.addView(deleteDatabaseButton);
+        deleteCompletedDatabasesButton = button(root, "Delete completed databases (0)", v -> showSuccessfulDatabasesForDeletion());
         root.addView(databaseRow);
         queueSummary = new TextView(this);
         queueSummary.setText("No link databases yet. Paste links or import a TXT file.");
@@ -271,11 +273,11 @@ public class MainActivity extends Activity {
     private static final class BatchItem {
         final String path, filename, name;
         final int total, done, failed, pending, processing;
-        final boolean complete;
+        final boolean processed, complete;
         BatchItem(JSONObject o) {
             path=o.optString("path"); filename=o.optString("filename"); name=o.optString("name", filename);
             total=o.optInt("total"); done=o.optInt("done"); failed=o.optInt("failed");
-            pending=o.optInt("pending"); processing=o.optInt("processing"); complete=o.optBoolean("complete");
+            pending=o.optInt("pending"); processing=o.optInt("processing"); processed=o.optBoolean("processed"); complete=o.optBoolean("complete");
         }
         String label() { return name + "\nTotal: " + total + "  •  Done: " + done + "  •  Failed: " + failed; }
     }
@@ -285,9 +287,16 @@ public class MainActivity extends Activity {
             if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
             JSONArray array = new JSONArray(bulkEngine.listBatches());
             ArrayList<BatchItem> loaded = new ArrayList<>();
-            for (int i=0;i<array.length();i++) loaded.add(new BatchItem(array.getJSONObject(i)));
+            ArrayList<BatchItem> successful = new ArrayList<>();
+            for (int i=0;i<array.length();i++) {
+                BatchItem item = new BatchItem(array.getJSONObject(i));
+                if (item.complete) successful.add(item); else loaded.add(item);
+            }
             runOnUiThread(() -> {
                 databaseItems.clear(); databaseItems.addAll(loaded);
+                successfulDatabaseItems.clear(); successfulDatabaseItems.addAll(successful);
+                deleteCompletedDatabasesButton.setText("Delete completed databases (" + successfulDatabaseItems.size() + ")");
+                deleteCompletedDatabasesButton.setEnabled(!bulkUploadRunning && !successfulDatabaseItems.isEmpty());
                 ArrayList<String> labels = new ArrayList<>();
                 int selectedIndex = -1;
                 for (int i=0;i<databaseItems.size();i++) {
@@ -326,8 +335,8 @@ public class MainActivity extends Activity {
         queueSummary.setText("Database: " + item.name + "\nTotal links: " + item.total +
             "  •  Completed: " + item.done + "  •  Failed: " + item.failed +
             "  •  Pending: " + item.pending + "  •  Processing: " + item.processing);
-        deleteDatabaseButton.setVisibility(item.complete ? View.VISIBLE : View.GONE);
-        uploadButton.setEnabled(!bulkUploadRunning && !item.complete);
+        deleteDatabaseButton.setVisibility(item.processed ? View.VISIBLE : View.GONE);
+        uploadButton.setEnabled(!bulkUploadRunning);
     }
 
     private boolean isSelectedDatabaseComplete() {
@@ -335,17 +344,45 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    private void deleteSelectedDatabase() {
-        if (bulkUploadRunning || selectedDatabasePath.isEmpty()) return;
-        final String path=selectedDatabasePath;
+    private void showSuccessfulDatabasesForDeletion() {
+        if (bulkUploadRunning || successfulDatabaseItems.isEmpty()) return;
+        String[] labels = new String[successfulDatabaseItems.size()];
+        for (int i=0;i<labels.length;i++) {
+            BatchItem item = successfulDatabaseItems.get(i);
+            labels[i] = item.name + " (" + item.done + "/" + item.total + " done)";
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Delete successful database")
+            .setItems(labels, (dialog, which) -> {
+                BatchItem item = successfulDatabaseItems.get(which);
+                new android.app.AlertDialog.Builder(this)
+                    .setTitle("Delete database?")
+                    .setMessage("This database is fully successful and locked. Delete it permanently?")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Delete", (d, w) -> deleteDatabasePath(item.path))
+                    .show();
+            })
+            .setNegativeButton("Close", null)
+            .show();
+    }
+
+    private void deleteDatabasePath(String path) {
+        if (bulkUploadRunning || path == null || path.isEmpty()) return;
         io.execute(() -> {
             try {
                 if (bulkEngine.deleteBatch(path)) {
-                    log("Completed database deleted."); selectedDatabasePath="";
+                    log("Database deleted.");
+                    if (path.equals(selectedDatabasePath)) selectedDatabasePath="";
                     refreshBatchListOnIo("");
-                } else log("Database cannot be deleted: it is not fully completed.");
+                } else log("Database cannot be deleted until processing has finished.");
             } catch (Throwable error) { log("Database deletion failed: " + error.getMessage()); }
         });
+    }
+
+    private void deleteSelectedDatabase() {
+        if (bulkUploadRunning || selectedDatabasePath.isEmpty()) return;
+        final String path=selectedDatabasePath;
+        deleteDatabasePath(path);
     }
 
     private void createBatchFromInput(String text, String name, boolean startAfterCreate) {
@@ -799,7 +836,7 @@ public class MainActivity extends Activity {
         BatchItem item=null;
         for (BatchItem candidate:databaseItems) if(candidate.path.equals(selectedDatabasePath)) item=candidate;
         if (item == null) { log("Selected database is no longer available."); return; }
-        if (item.complete) { log("This database is fully completed and cannot be started."); return; }
+        if (item.complete) { log("This database is fully successful and locked."); return; }
         beginBulkUpload(selectedDatabasePath);
     }
 
@@ -1131,7 +1168,7 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             uploadButton.setEnabled(!isSelectedDatabaseComplete());
             stopButton.setEnabled(false); stopButton.setText("Stop");
-            databaseSpinner.setEnabled(true); deleteDatabaseButton.setEnabled(true);
+            databaseSpinner.setEnabled(true); deleteDatabaseButton.setEnabled(true); deleteCompletedDatabasesButton.setEnabled(!successfulDatabaseItems.isEmpty());
             uploadProgress.setIndeterminate(false); uploadProgressText.setText(message);
         });
         log(message);
