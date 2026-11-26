@@ -820,13 +820,14 @@ public class MainActivity extends Activity {
                 String url = bulkEngine.nextPending(bulkDatabasePath);
                 if (url == null) {
                     bulkPostLoadInProgress = false;
-                    String counts = bulkEngine.counts();
-                    runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
-                    finishBulkUpload("Bulk queue completed. " + counts);
+                    String counts = bulkEngine.counts(bulkDatabasePath);
+                    refreshBatchListOnIo(bulkDatabasePath);
+                    finishBulkUpload("Selected database processing finished. " + counts);
                     return;
                 }
                 bulkCurrentUrl = url;
                 bulkEngine.markProcessing(bulkDatabasePath, url);
+                refreshBatchListOnIo(bulkDatabasePath);
                 log("Processing Instagram post: " + url);
                 bulkDownloadInProgress = true;
                 bulkPostLoadInProgress = false;
