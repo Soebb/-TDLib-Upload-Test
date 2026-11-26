@@ -37,6 +37,7 @@ public final class PythonBulkEngine {
         try { return result.callAttr("get", "deleted").toBoolean(); }
         catch (Throwable ignored) { return result.toString().contains("\\"deleted\\": true"); }
     }
+    public void initialize(String databasePath) { module.callAttr("initialize", databasePath); }
     public String counts(String databasePath) {
         return module.callAttr("counts_json", databasePath).toString();
     }
