@@ -756,7 +756,6 @@ public class MainActivity extends Activity {
                     finishBulkUpload("Bulk queue completed. " + counts);
                     return;
                 }
-                if (bulkPaused) return;
                 bulkCurrentUrl = url;
                 bulkEngine.markProcessing(url);
                 log("Processing Instagram post: " + url);
