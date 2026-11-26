@@ -20,12 +20,20 @@ import java.io.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.HashSet;
+import java.util.ArrayList;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private EditText apiId, apiHash, phone, code, channel, captionInput, linksInput;
     private TextView status, selected, codeInfoView, accountState, queueSummary;
+    private Spinner databaseSpinner;
+    private Button deleteDatabaseButton;
+    private final ArrayList<BatchItem> databaseItems = new ArrayList<>();
+    private String selectedDatabasePath = "";
+    private String bulkDatabasePath = "";
+    private volatile boolean bulkFailureHandling = false;
+    private Runnable bulkRetryRunnable;
     private Button resendButton, connectButton, submitCodeButton, uploadButton;
     private ProgressBar uploadProgress;
     private TextView uploadProgressText;
@@ -127,9 +135,28 @@ public class MainActivity extends Activity {
             | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
             | android.text.InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
         root.addView(linksInput);
+        LinearLayout databaseRow = new LinearLayout(this);
+        databaseRow.setOrientation(LinearLayout.HORIZONTAL);
+        databaseSpinner = new Spinner(this);
+        databaseRow.addView(databaseSpinner, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        deleteDatabaseButton = new Button(this);
+        deleteDatabaseButton.setText("Delete");
+        deleteDatabaseButton.setVisibility(View.GONE);
+        deleteDatabaseButton.setOnClickListener(v -> deleteSelectedDatabase());
+        databaseRow.addView(deleteDatabaseButton);
+        root.addView(databaseRow);
         queueSummary = new TextView(this);
-        queueSummary.setText("Queue database is initializing...");
+        queueSummary.setText("No link databases yet. Paste links or import a TXT file.");
         root.addView(queueSummary);
+        databaseSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (bulkUploadRunning || position < 0 || position >= databaseItems.size()) return;
+                BatchItem item = databaseItems.get(position);
+                selectedDatabasePath = item.path;
+                showSelectedDatabase(item);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
         button(root,"Import links.txt file",v -> chooseLinksFile());
         button(root,"Upload a local file",v -> chooseFile());
         selected = new TextView(this); selected.setText("No file selected"); root.addView(selected);
@@ -232,12 +259,92 @@ public class MainActivity extends Activity {
         io.execute(() -> {
             try {
                 bulkEngine = new PythonBulkEngine(this);
-                String counts = bulkEngine.counts();
-                runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
-                log("Python/Chaquopy initialized. yt-dlp and sqlite3 are ready.");
-            } catch (Throwable error) {
-                log("Python engine initialization failed: " + error.getMessage());
-            }
+                refreshBatchListOnIo("");
+                log("Python/Chaquopy initialized. No database is created until links are imported.");
+            } catch (Throwable error) { log("Python engine initialization failed: " + error.getMessage()); }
+        });
+    }
+
+    private static final class BatchItem {
+        final String path, filename, name;
+        final int total, done, failed, pending, processing;
+        final boolean complete;
+        BatchItem(JSONObject o) {
+            path=o.optString("path"); filename=o.optString("filename"); name=o.optString("name", filename);
+            total=o.optInt("total"); done=o.optInt("done"); failed=o.optInt("failed");
+            pending=o.optInt("pending"); processing=o.optInt("processing"); complete=o.optBoolean("complete");
+        }
+        String label() { return name + "\nTotal: " + total + "  •  Done: " + done + "  •  Failed: " + failed; }
+    }
+
+    private void refreshBatchListOnIo(String preferredPath) {
+        try {
+            if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
+            JSONArray array = new JSONArray(bulkEngine.listBatches());
+            ArrayList<BatchItem> loaded = new ArrayList<>();
+            for (int i=0;i<array.length();i++) loaded.add(new BatchItem(array.getJSONObject(i)));
+            runOnUiThread(() -> {
+                databaseItems.clear(); databaseItems.addAll(loaded);
+                ArrayList<String> labels = new ArrayList<>();
+                int selectedIndex = -1;
+                for (int i=0;i<databaseItems.size();i++) {
+                    BatchItem item=databaseItems.get(i); labels.add(item.label());
+                    if (item.path.equals(preferredPath) || item.path.equals(selectedDatabasePath)) selectedIndex=i;
+                }
+                ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, labels) {
+                    @Override public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                        TextView view=(TextView)super.getView(position,convertView,parent);
+                        view.setSingleLine(false); view.setTextSize(13); view.setPadding(8,8,8,8); return view;
+                    }
+                    @Override public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
+                        TextView view=(TextView)super.getDropDownView(position,convertView,parent);
+                        view.setSingleLine(false); view.setTextSize(14); view.setPadding(16,12,16,12); return view;
+                    }
+                };
+                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                databaseSpinner.setAdapter(adapter);
+                if (selectedIndex >= 0) databaseSpinner.setSelection(selectedIndex);
+                else if (!databaseItems.isEmpty()) databaseSpinner.setSelection(0);
+                else { selectedDatabasePath=""; queueSummary.setText("No link databases yet. Paste links or import a TXT file."); deleteDatabaseButton.setVisibility(View.GONE); }
+            });
+        } catch (Throwable error) { log("Could not list link databases: " + error.getMessage()); }
+    }
+
+    private void showSelectedDatabase(BatchItem item) {
+        queueSummary.setText("Database: " + item.name + "\nTotal links: " + item.total +
+            "  •  Completed: " + item.done + "  •  Failed: " + item.failed +
+            "  •  Pending: " + item.pending + "  •  Processing: " + item.processing);
+        deleteDatabaseButton.setVisibility(item.complete ? View.VISIBLE : View.GONE);
+        uploadButton.setEnabled(!bulkUploadRunning && !item.complete);
+    }
+
+    private void deleteSelectedDatabase() {
+        if (bulkUploadRunning || selectedDatabasePath.isEmpty()) return;
+        final String path=selectedDatabasePath;
+        io.execute(() -> {
+            try {
+                if (bulkEngine.deleteBatch(path)) {
+                    log("Completed database deleted."); selectedDatabasePath="";
+                    refreshBatchListOnIo("");
+                } else log("Database cannot be deleted: it is not fully completed.");
+            } catch (Throwable error) { log("Database deletion failed: " + error.getMessage()); }
+        });
+    }
+
+    private void createBatchFromInput(String text, String name, boolean startAfterCreate) {
+        if (text == null || text.trim().isEmpty()) { log("No Instagram links supplied; no database was created."); return; }
+        if (bulkUploadRunning) { log("Cannot import a new batch while uploading is active."); return; }
+        io.execute(() -> {
+            try {
+                if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
+                JSONObject created = new JSONObject(bulkEngine.createBatch(text, name));
+                if (!created.optBoolean("created")) { log("No valid Instagram links found; no database was created."); return; }
+                String path=created.getString("database"); selectedDatabasePath=path;
+                log("Created a new SQLite database with " + created.optInt("received") + " unique link(s): " + created.optString("filename"));
+                refreshBatchListOnIo(path);
+                runOnUiThread(() -> linksInput.setText(""));
+                if (startAfterCreate) beginBulkUpload(path);
+            } catch (Throwable error) { log("Could not create link database: " + error.getMessage()); }
         });
     }
 
@@ -509,15 +616,13 @@ public class MainActivity extends Activity {
             io.execute(() -> {
                 try (InputStream in = getContentResolver().openInputStream(uri);
                      ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                    byte[] buffer = new byte[8192];
-                    int read;
+                    byte[] buffer = new byte[8192]; int read;
                     while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
                     String text = out.toString("UTF-8");
-                    runOnUiThread(() -> linksInput.setText(text));
-                    log("Loaded links text file (" + text.split("\\r?\\n").length + " lines). Tap Start uploading to process it.");
-                } catch (Exception error) {
-                    log("Could not read links file: " + error.getMessage());
-                }
+                    String name = "TXT import " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date());
+                    log("Received links TXT file (" + text.split("\\r?\\n").length + " lines). Creating a separate database.");
+                    createBatchFromInput(text, name, false);
+                } catch (Exception error) { log("Could not read links file: " + error.getMessage()); }
             });
         } else if(requestCode==1001 && resultCode==RESULT_OK && data!=null) {
             Uri uri=data.getData();
@@ -664,49 +769,46 @@ public class MainActivity extends Activity {
         if (client == null || !isSignedIn) { log("START BLOCKED: sign in to Telegram first."); return; }
         String username = channel.getText().toString().trim().replace("@", "");
         if (username.isEmpty()) { log("START BLOCKED: enter a public channel username."); return; }
-        final String pastedLinks = linksInput.getText().toString();
-        bulkCaptionOverride = captionInput.getText().toString().trim();
-        bulkUploadRunning = true;
-        bulkPostLoadInProgress = false;
-        bulkDownloadInProgress = false;
-        bulkChunkInFlight = false;
-        bulkCurrentUrl = "";
-        bulkCurrentFiles = null;
-        bulkCurrentMedia = null;
-        bulkChunkPlan = null;
-        bulkChunkIndex = 0;
+        String pasted = linksInput.getText().toString();
+        if (!pasted.trim().isEmpty()) {
+            createBatchFromInput(pasted, "Pasted links " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date()), true);
+            return;
+        }
+        if (selectedDatabasePath.isEmpty()) { log("START BLOCKED: import a TXT file or paste links to create/select a database."); return; }
+        BatchItem item=null;
+        for (BatchItem candidate:databaseItems) if(candidate.path.equals(selectedDatabasePath)) item=candidate;
+        if (item == null) { log("Selected database is no longer available."); return; }
+        if (item.complete) { log("This database is fully completed and cannot be started."); return; }
+        beginBulkUpload(selectedDatabasePath);
+    }
+
+    private void beginBulkUpload(String databasePath) {
+        if (bulkUploadRunning || uploadInProgress) return;
+        if (client == null || !isSignedIn) { log("START BLOCKED: sign in to Telegram first."); return; }
+        String username = channel.getText().toString().trim().replace("@", "");
+        if (username.isEmpty()) { log("START BLOCKED: enter a public channel username."); return; }
+        bulkDatabasePath = databasePath; bulkCaptionOverride = captionInput.getText().toString().trim();
+        bulkUploadRunning = true; bulkFailureHandling=false;
+        bulkPostLoadInProgress=false; bulkDownloadInProgress=false; bulkChunkInFlight=false;
+        bulkCurrentUrl=""; bulkCurrentFiles=null; bulkCurrentMedia=null; bulkChunkPlan=null; bulkChunkIndex=0;
         startUploadForegroundService();
         runOnUiThread(() -> {
-            uploadButton.setEnabled(false);
-            uploadProgress.setVisibility(View.VISIBLE);
-            uploadProgress.setIndeterminate(true);
-            uploadProgressText.setText("Preparing link queue...");
+            uploadButton.setEnabled(false); databaseSpinner.setEnabled(false); deleteDatabaseButton.setEnabled(false);
+            uploadProgress.setVisibility(View.VISIBLE); uploadProgress.setIndeterminate(true);
+            uploadProgressText.setText("Preparing selected database...");
         });
         io.execute(() -> {
             try {
-                if (bulkEngine == null) bulkEngine = new PythonBulkEngine(this);
-                JSONObject imported = new JSONObject(bulkEngine.importLinks(pastedLinks));
-                int received = imported.optInt("received", 0);
-                String existingCounts = bulkEngine.counts();
-                JSONObject existing = new JSONObject(existingCounts);
-                if (received == 0 && existing.optInt("pending", 0) == 0) {
-                    finishBulkUpload("No Instagram links found and the SQLite queue has no pending items.");
-                    return;
-                }
-                log("Found " + received + " link(s) in the input; " + imported.optInt("inserted", 0)
-                    + " new link(s) added. Existing pending items will also be processed.");
-                String counts = bulkEngine.counts();
-                runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
+                bulkEngine.initialize(bulkDatabasePath);
+                refreshBatchListOnIo(bulkDatabasePath);
                 client.send(new TdApi.SearchPublicChat(username), response -> {
                     if (!bulkUploadRunning) return;
                     if (response instanceof TdApi.Error) { finishBulkUpload("Channel lookup failed: " + ((TdApi.Error) response).message); return; }
                     if (!(response instanceof TdApi.Chat)) { finishBulkUpload("Unexpected response while resolving the channel."); return; }
-                    TdApi.Chat chat = (TdApi.Chat) response;
-                    bulkChatId = chat.id;
-                    log("Bulk destination: " + chat.title + " (ID " + chat.id + ").");
-                    loadNextBulkPost();
+                    TdApi.Chat chat=(TdApi.Chat)response; bulkChatId=chat.id;
+                    log("Bulk destination: " + chat.title + " (ID " + chat.id + ")."); loadNextBulkPost();
                 });
-            } catch (Throwable error) { finishBulkUpload("Could not initialize the bulk queue: " + error.getMessage()); }
+            } catch(Throwable error) { finishBulkUpload("Could not initialize selected database: " + error.getMessage()); }
         });
     }
 
@@ -715,7 +817,7 @@ public class MainActivity extends Activity {
         bulkPostLoadInProgress = true;
         io.execute(() -> {
             try {
-                String url = bulkEngine.nextPending();
+                String url = bulkEngine.nextPending(bulkDatabasePath);
                 if (url == null) {
                     bulkPostLoadInProgress = false;
                     String counts = bulkEngine.counts();
@@ -724,7 +826,7 @@ public class MainActivity extends Activity {
                     return;
                 }
                 bulkCurrentUrl = url;
-                bulkEngine.markProcessing(url);
+                bulkEngine.markProcessing(bulkDatabasePath, url);
                 log("Processing Instagram post: " + url);
                 bulkDownloadInProgress = true;
                 bulkPostLoadInProgress = false;
@@ -735,7 +837,7 @@ public class MainActivity extends Activity {
                 if (bulkCurrentFiles.length() == 0 || bulkCurrentFiles.length() != bulkCurrentMedia.length())
                     throw new IllegalStateException("Downloaded file list does not match extracted media metadata.");
                 bulkCurrentCaption = bulkCaptionOverride.isEmpty() ? data.optString("caption", "") : bulkCaptionOverride;
-                bulkChunkPlan = new JSONArray(bulkEngine.planChunks(bulkCurrentMedia.toString(), bulkEngine.sentChunks(url)));
+                bulkChunkPlan = new JSONArray(bulkEngine.planChunks(bulkCurrentMedia.toString(), bulkEngine.sentChunks(bulkDatabasePath, url)));
                 bulkChunkIndex = 0;
                 log("Downloaded " + bulkCurrentFiles.length() + " media item(s). Caption: " +
                     (bulkCurrentCaption.isEmpty() ? "none" : "extracted/custom") + ".");
@@ -754,12 +856,17 @@ public class MainActivity extends Activity {
             final String completedUrl = bulkCurrentUrl;
             io.execute(() -> {
                 try {
-                    bulkEngine.markDone(completedUrl);
-                    bulkEngine.cleanup(completedUrl);
-                    log("Post uploaded successfully: " + completedUrl);
-                    String counts = bulkEngine.counts();
-                    runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
-                    loadNextBulkPost();
+                    log("All media for this link uploaded. Marking done after a short delay: " + completedUrl);
+                    mainHandler.postDelayed(() -> io.execute(() -> {
+                        try {
+                            if (!bulkUploadRunning) return;
+                            bulkEngine.markDone(bulkDatabasePath, completedUrl);
+                            bulkEngine.cleanup(completedUrl);
+                            refreshBatchListOnIo(bulkDatabasePath);
+                            log("Post status changed to done: " + completedUrl);
+                            loadNextBulkPost();
+                        } catch (Throwable error) { failCurrentBulkPost("Could not finalize post: " + error.getMessage()); }
+                    }), 3000);
                 } catch (Throwable error) { failCurrentBulkPost("Could not finalize post: " + error.getMessage()); }
             });
             return;
@@ -834,7 +941,7 @@ public class MainActivity extends Activity {
         final String signature = bulkCurrentChunkSignature;
         io.execute(() -> {
             try {
-                bulkEngine.markChunkSent(url, number, signature);
+                bulkEngine.markChunkSent(bulkDatabasePath, url, number, signature);
                 bulkChunkInFlight = false;
                 bulkChunkIndex++;
                 sendNextBulkChunk();
@@ -885,18 +992,32 @@ public class MainActivity extends Activity {
     }
 
     private void failCurrentBulkPost(String reason) {
-        bulkChunkInFlight = false;
+        if (!bulkUploadRunning || bulkFailureHandling) return;
+        bulkFailureHandling = true; bulkChunkInFlight = false; bulkDownloadInProgress = false;
         final String failedUrl = bulkCurrentUrl;
         synchronized (bulkAwaitingMessageIds) {
-            bulkAwaitingMessageIds.clear();
-            bulkSucceededBeforeResponse.clear();
-            bulkChunkResponseReceived = false;
+            bulkAwaitingMessageIds.clear(); bulkSucceededBeforeResponse.clear(); bulkChunkResponseReceived = false;
         }
         io.execute(() -> {
-            try { if (failedUrl != null && !failedUrl.isEmpty()) bulkEngine.markFailed(failedUrl, reason); }
-            catch (Throwable ignored) {}
-            log(reason + (failedUrl == null || failedUrl.isEmpty() ? "" : " URL: " + failedUrl));
-            loadNextBulkPost();
+            try {
+                JSONObject retry = new JSONObject(bulkEngine.retryOrFail(bulkDatabasePath, failedUrl, reason));
+                int attempts = retry.optInt("attempts", 3);
+                String state = retry.optString("status", "failed");
+                refreshBatchListOnIo(bulkDatabasePath);
+                log(reason + " URL: " + failedUrl + " (attempt " + attempts + "/3).");
+                if ("pending".equals(state)) {
+                    long delay = attempts == 1 ? 5000L : 15000L;
+                    log("Retry scheduled in " + (delay/1000) + " seconds.");
+                    bulkFailureHandling = false;
+                    bulkRetryRunnable = () -> { if (bulkUploadRunning) loadNextBulkPost(); };
+                    mainHandler.postDelayed(bulkRetryRunnable, delay);
+                } else {
+                    log("Link marked failed after 3 attempts: " + failedUrl);
+                    bulkFailureHandling = false; loadNextBulkPost();
+                }
+            } catch (Throwable error) {
+                bulkFailureHandling = false; log("Could not save retry status: " + error.getMessage()); loadNextBulkPost();
+            }
         });
     }
 
@@ -922,10 +1043,11 @@ public class MainActivity extends Activity {
         bulkDownloadInProgress = false;
         bulkChunkInFlight = false;
         stopUploadForegroundService();
+        if (bulkRetryRunnable != null) { mainHandler.removeCallbacks(bulkRetryRunnable); bulkRetryRunnable=null; }
+        refreshBatchListOnIo(bulkDatabasePath);
         runOnUiThread(() -> {
-            uploadButton.setEnabled(true);
-            uploadProgress.setIndeterminate(false);
-            uploadProgressText.setText(message);
+            uploadButton.setEnabled(true); databaseSpinner.setEnabled(true); deleteDatabaseButton.setEnabled(true);
+            uploadProgress.setIndeterminate(false); uploadProgressText.setText(message);
         });
         log(message);
     }
@@ -954,6 +1076,7 @@ public class MainActivity extends Activity {
         if (resendCountdown != null) mainHandler.removeCallbacks(resendCountdown);
         saveForm();
         super.onDestroy();
+        if (bulkRetryRunnable != null) mainHandler.removeCallbacks(bulkRetryRunnable);
         if (!bulkUploadRunning && !uploadInProgress) io.shutdown();
     }
 }
