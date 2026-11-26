@@ -54,6 +54,7 @@ public class MainActivity extends Activity {
     private int pendingApiId;
     private String pendingApiHash = "";
     private boolean phoneSubmitted = false;
+    private volatile boolean waitingForPhoneNumber = false;
     private boolean loginRequested = false;
     private SharedPreferences preferences;
     private PythonBulkEngine bulkEngine;
@@ -429,12 +430,18 @@ public class MainActivity extends Activity {
             if (client != null) {
                 if (requestLogin) {
                     loginRequested = true;
-                    submitPhoneNumberIfNeeded();
+                    if (waitingForPhoneNumber) {
+                        phoneSubmitted = false;
+                        submitPhoneNumberIfNeeded();
+                    } else {
+                        log("TDLib is still restoring or already waiting for a login code; waiting for its authorization state before sending the phone number.");
+                    }
                 }
                 return;
             }
             loginRequested = requestLogin;
             phoneSubmitted = false;
+            waitingForPhoneNumber = false;
             log(requestLogin ? "Connecting to Telegram..." : "Restoring saved Telegram session...");
             client = Client.create(this::onUpdate, null, null);
         } catch (Throwable e) {
@@ -461,6 +468,7 @@ public class MainActivity extends Activity {
                     }
                 });
             } else if(s instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
+                waitingForPhoneNumber = true;
                 setAccountState("Not signed in");
                 if(loginRequested && !phoneSubmitted) {
                     String number=normalizePhoneNumber(phone.getText().toString());
@@ -469,6 +477,7 @@ public class MainActivity extends Activity {
                     client.send(new TdApi.SetAuthenticationPhoneNumber(number,null),this::onResult);
                 }
             } else if(s instanceof TdApi.AuthorizationStateWaitCode) {
+                waitingForPhoneNumber = false;
                 TdApi.AuthenticationCodeInfo info = ((TdApi.AuthorizationStateWaitCode)s).codeInfo;
                 showCodeInfo(info);
                 codeInfoView.setVisibility(View.VISIBLE);
@@ -547,9 +556,11 @@ public class MainActivity extends Activity {
             loginRequested=false;
             log("Telegram error: "+((TdApi.Error)o).message);
         } else if(o instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
+            waitingForPhoneNumber = true;
             setAccountState("Not signed in");
             if(loginRequested) submitPhoneNumberIfNeeded();
         } else if(o instanceof TdApi.AuthorizationStateWaitCode) {
+            waitingForPhoneNumber = false;
             showCodeInfo(((TdApi.AuthorizationStateWaitCode)o).codeInfo);
             setAccountState("Waiting for login code");
             runOnUiThread(() -> {
