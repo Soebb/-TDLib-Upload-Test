@@ -244,6 +244,10 @@ def review_posts(database_path):
         conn.close()
 
 
+def review_posts_json(database_path):
+    return json.dumps(review_posts(database_path), ensure_ascii=False)
+
+
 def resolve_review(database_path, url, uploaded):
     conn = _connect(database_path)
     try:
