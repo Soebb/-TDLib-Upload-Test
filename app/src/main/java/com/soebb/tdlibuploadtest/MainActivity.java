@@ -303,9 +303,18 @@ public class MainActivity extends Activity {
                 };
                 adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
                 databaseSpinner.setAdapter(adapter);
-                if (selectedIndex >= 0) databaseSpinner.setSelection(selectedIndex);
-                else if (!databaseItems.isEmpty()) databaseSpinner.setSelection(0);
-                else { selectedDatabasePath=""; queueSummary.setText("No link databases yet. Paste links or import a TXT file."); deleteDatabaseButton.setVisibility(View.GONE); }
+                if (selectedIndex >= 0) {
+                    selectedDatabasePath = databaseItems.get(selectedIndex).path;
+                    databaseSpinner.setSelection(selectedIndex);
+                    showSelectedDatabase(databaseItems.get(selectedIndex));
+                } else if (!databaseItems.isEmpty()) {
+                    selectedDatabasePath = databaseItems.get(0).path;
+                    databaseSpinner.setSelection(0);
+                    showSelectedDatabase(databaseItems.get(0));
+                } else {
+                    selectedDatabasePath=""; queueSummary.setText("No link databases yet. Paste links or import a TXT file.");
+                    deleteDatabaseButton.setVisibility(View.GONE);
+                }
             });
         } catch (Throwable error) { log("Could not list link databases: " + error.getMessage()); }
     }
@@ -316,6 +325,11 @@ public class MainActivity extends Activity {
             "  •  Pending: " + item.pending + "  •  Processing: " + item.processing);
         deleteDatabaseButton.setVisibility(item.complete ? View.VISIBLE : View.GONE);
         uploadButton.setEnabled(!bulkUploadRunning && !item.complete);
+    }
+
+    private boolean isSelectedDatabaseComplete() {
+        for (BatchItem item : databaseItems) if (item.path.equals(selectedDatabasePath)) return item.complete;
+        return false;
     }
 
     private void deleteSelectedDatabase() {
@@ -1050,7 +1064,8 @@ public class MainActivity extends Activity {
         if (bulkRetryRunnable != null) { mainHandler.removeCallbacks(bulkRetryRunnable); bulkRetryRunnable=null; }
         refreshBatchListOnIo(bulkDatabasePath);
         runOnUiThread(() -> {
-            uploadButton.setEnabled(true); databaseSpinner.setEnabled(true); deleteDatabaseButton.setEnabled(true);
+            uploadButton.setEnabled(!isSelectedDatabaseComplete());
+            databaseSpinner.setEnabled(true); deleteDatabaseButton.setEnabled(true);
             uploadProgress.setIndeterminate(false); uploadProgressText.setText(message);
         });
         log(message);
