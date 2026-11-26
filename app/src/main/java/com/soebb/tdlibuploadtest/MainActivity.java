@@ -741,6 +741,7 @@ public class MainActivity extends Activity {
                 String counts = bulkEngine.counts();
                 runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
                 client.send(new TdApi.SearchPublicChat(username), response -> {
+                    if (!bulkUploadRunning) return;
                     if (response instanceof TdApi.Error) { finishBulkUpload("Channel lookup failed: " + ((TdApi.Error) response).message); return; }
                     if (!(response instanceof TdApi.Chat)) { finishBulkUpload("Unexpected response while resolving the channel."); return; }
                     TdApi.Chat chat = (TdApi.Chat) response;
@@ -758,6 +759,7 @@ public class MainActivity extends Activity {
         io.execute(() -> {
             try {
                 String url = bulkEngine.nextPending();
+                if (bulkStopRequested) return;
                 if (url == null) {
                     String counts = bulkEngine.counts();
                     runOnUiThread(() -> queueSummary.setText("SQLite queue: " + counts));
@@ -936,6 +938,12 @@ public class MainActivity extends Activity {
             bulkChunkResponseReceived = false;
         }
         io.execute(() -> {
+            if (bulkStopRequested) {
+                try { if (failedUrl != null && !failedUrl.isEmpty()) bulkEngine.markPending(failedUrl); }
+                catch (Throwable ignored) {}
+                finishBulkUpload("Bulk queue stopped. The current item remains pending for a later resume.");
+                return;
+            }
             try { if (failedUrl != null && !failedUrl.isEmpty()) bulkEngine.markFailed(failedUrl, reason); }
             catch (Throwable ignored) {}
             log(reason + (failedUrl == null || failedUrl.isEmpty() ? "" : " URL: " + failedUrl));
