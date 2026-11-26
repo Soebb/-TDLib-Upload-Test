@@ -457,7 +457,6 @@ public class MainActivity extends Activity {
                         phoneSubmitted = false;
                         submitPhoneNumberIfNeeded();
                     } else {
-                        log("TDLib is still restoring or already waiting for a login code; waiting for its authorization state before sending the phone number.");
                     }
                 }
                 return;
