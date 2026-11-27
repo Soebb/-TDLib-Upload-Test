@@ -26,8 +26,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
-    private EditText apiId, apiHash, phone, emailAddressInput, code, channel, captionInput, linksInput;
-    private Button submitEmailAddressButton;
+    private EditText apiId, apiHash, phone, emailAddressInput, code, password, channel, captionInput, linksInput;
+    private Button submitEmailAddressButton, submitPasswordButton;
     private TextView status, selected, codeInfoView, accountState, queueSummary;
     private Spinner databaseSpinner;
     private Button deleteDatabaseButton, deleteCompletedDatabasesButton, reviewUncertainButton;
@@ -79,6 +79,7 @@ public class MainActivity extends Activity {
     private volatile boolean waitingForPhoneNumber = false;
     private volatile boolean waitingForEmailAddress = false;
     private volatile boolean waitingForEmailCode = false;
+    private volatile boolean waitingForPassword = false;
     private boolean loginRequested = false;
     private SharedPreferences preferences;
     private PythonBulkEngine bulkEngine;
@@ -134,6 +135,12 @@ public class MainActivity extends Activity {
         emailAddressInput.setVisibility(View.GONE);
         submitEmailAddressButton = button(root,"Submit email address",v -> submitEmailAddress());
         submitEmailAddressButton.setVisibility(View.GONE);
+        password = field(root,"Telegram two-step verification password");
+        password.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        password.setTransformationMethod(android.text.method.PasswordTransformationMethod.getInstance());
+        password.setVisibility(View.GONE);
+        submitPasswordButton = button(root,"Submit two-step password",v -> submitPassword());
+        submitPasswordButton.setVisibility(View.GONE);
         connectButton = button(root,"Connect / Send login code",v -> startLogin());
         code = field(root,"Telegram login code");
         submitCodeButton = button(root,"Submit code",v -> submitCode());
@@ -245,6 +252,8 @@ public class MainActivity extends Activity {
         apiId.setVisibility(v); apiHash.setVisibility(v); phone.setVisibility(v);
         emailAddressInput.setVisibility(visible && waitingForEmailAddress ? View.VISIBLE : View.GONE);
         submitEmailAddressButton.setVisibility(visible && waitingForEmailAddress ? View.VISIBLE : View.GONE);
+        password.setVisibility(visible && waitingForPassword ? View.VISIBLE : View.GONE);
+        submitPasswordButton.setVisibility(visible && waitingForPassword ? View.VISIBLE : View.GONE);
         connectButton.setVisibility(v); code.setVisibility(v); submitCodeButton.setVisibility(v);
         codeInfoView.setVisibility(v); resendButton.setVisibility(v);
     }
@@ -543,6 +552,7 @@ public class MainActivity extends Activity {
             waitingForPhoneNumber = false;
             waitingForEmailAddress = false;
             waitingForEmailCode = false;
+            waitingForPassword = false;
             log(requestLogin ? "Connecting to Telegram..." : "Restoring saved Telegram session...");
             client = Client.create(this::onUpdate, null, null);
         } catch (Throwable e) {
@@ -630,8 +640,7 @@ public class MainActivity extends Activity {
                 log("Telegram is waiting for the email authentication code" +
                     (info == null ? "." : " sent to " + info.emailAddressPattern + "."));
             } else if(s instanceof TdApi.AuthorizationStateWaitPassword) {
-                setAccountState("Password required");
-                log("This build does not yet include two-step password entry.");
+                showPasswordPrompt((TdApi.AuthorizationStateWaitPassword)s);
             } else if(s instanceof TdApi.AuthorizationStateReady) {
                 loginRequested = false;
                 phoneSubmitted = true;
@@ -885,9 +894,12 @@ public class MainActivity extends Activity {
     private void onResult(TdApi.Object o) {
         if (o == null) return;
         if(o instanceof TdApi.Error) {
-            phoneSubmitted=false;
-            loginRequested=false;
+            if (!waitingForPassword) {
+                phoneSubmitted=false;
+                loginRequested=false;
+            }
             TdApi.Error error = (TdApi.Error)o;
+            if (waitingForPassword) runOnUiThread(() -> submitPasswordButton.setEnabled(true));
             log("TDLib error: " + error.message);
         } else if(o instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
             waitingForPhoneNumber = true;
@@ -944,8 +956,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> setLoginUiVisible(false));
             log("Authorization complete: account is signed in and ready to upload.");
         } else if(o instanceof TdApi.AuthorizationStateWaitPassword) {
-            setAccountState("Password required");
-            log("Two-step verification password is required, but this build has no password field yet.");
+            showPasswordPrompt((TdApi.AuthorizationStateWaitPassword)o);
         } else if(o instanceof TdApi.Ok && resendButton != null) {
             log("Request accepted. Waiting for Telegram...");
         }
@@ -1047,6 +1058,48 @@ public class MainActivity extends Activity {
         }
         log("Submitting email address to TDLib...");
         client.send(new TdApi.SetAuthenticationEmailAddress(address), this::onResult);
+    }
+
+    private void showPasswordPrompt(TdApi.AuthorizationStateWaitPassword state) {
+        waitingForPhoneNumber = false;
+        waitingForEmailAddress = false;
+        waitingForEmailCode = false;
+        waitingForPassword = true;
+        setAccountState("Two-step verification password required");
+        String hint = state.passwordHint == null ? "" : state.passwordHint.trim();
+        String recovery = state.hasRecoveryEmailAddress && state.recoveryEmailAddressPattern != null
+            ? "\nRecovery email: " + state.recoveryEmailAddressPattern : "";
+        runOnUiThread(() -> {
+            emailAddressInput.setVisibility(View.GONE);
+            submitEmailAddressButton.setVisibility(View.GONE);
+            code.setVisibility(View.GONE);
+            submitCodeButton.setVisibility(View.GONE);
+            resendButton.setVisibility(View.GONE);
+            password.setText("");
+            password.setHint(hint.isEmpty() ? "Telegram two-step verification password" : "Password hint: " + hint);
+            password.setVisibility(View.VISIBLE);
+            submitPasswordButton.setVisibility(View.VISIBLE);
+            submitPasswordButton.setEnabled(true);
+            codeInfoView.setText("Telegram requires your two-step verification password." + recovery);
+            codeInfoView.setVisibility(View.VISIBLE);
+        });
+        log("Telegram requested the account's two-step verification password.");
+    }
+
+    private void submitPassword() {
+        String value = password.getText().toString();
+        if (client == null || !waitingForPassword) {
+            log("Password cannot be submitted because TDLib is not waiting for it.");
+            return;
+        }
+        if (value.trim().isEmpty()) {
+            log("Enter your Telegram two-step verification password.");
+            return;
+        }
+        runOnUiThread(() -> submitPasswordButton.setEnabled(false));
+        password.setText("");
+        log("Submitting two-step verification password to TDLib...");
+        client.send(new TdApi.CheckAuthenticationPassword(value), this::onResult);
     }
 
     private void submitCode() {
