@@ -12,7 +12,7 @@ on:
       - ".github/workflows/build-apk.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: tdlib-chaquopy-bulk
@@ -62,9 +62,29 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload debug APK
+      - name: Upload debug APK as Actions artifact
         uses: actions/upload-artifact@v4
         with:
           name: tdlib-chaquopy-bulk-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish debug APK to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_PATH="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          if [[ -z "$APK_PATH" ]]; then
+            echo "Debug APK was not found."
+            exit 1
+          fi
+
+          TAG="debug-build-${GITHUB_RUN_NUMBER}-attempt-${GITHUB_RUN_ATTEMPT}"
+          TITLE="Debug APK - Build #${GITHUB_RUN_NUMBER} (attempt ${GITHUB_RUN_ATTEMPT})"
+
+          gh release create "$TAG" "$APK_PATH" \
+            --title "$TITLE" \
+            --notes "Automated debug APK built from commit ${GITHUB_SHA} on branch ${GITHUB_REF_NAME}." \
+            --target "$GITHUB_SHA"
