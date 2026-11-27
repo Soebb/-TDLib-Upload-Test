@@ -34,17 +34,26 @@ An Android app for downloading Instagram posts and sending their photos and vide
 | Python `sqlite3` | Persistent batches, URL statuses, retry information, and media-group checkpoints |
 | Android app | Login, URL/TXT input, destination channel, captions, progress, logs, and review controls |
 
-## Build
+## Build and releases
 
-The repository includes a GitHub Actions workflow that builds a **debug APK** when changes are pushed to the `instagram-bulk-tdlib-chaquopy` branch (for relevant project files), or when the workflow is started manually.
+The repository includes a GitHub Actions workflow that builds a **debug APK** when relevant project files are pushed to the `instagram-bulk-tdlib-chaquopy` branch, or when the workflow is started manually.
+
+After a successful build, the workflow automatically creates a **GitHub Release** and attaches the debug APK to it. Each workflow run/attempt gets its own release tag. You can download the APK from the repository's **Releases** page. The workflow also uploads the APK as a normal Actions artifact.
 
 The workflow uses Java 17, Python 3.11, Android SDK 35, Gradle 8.13, Chaquopy 17, and a pinned TDLib 1.8.70 Android build whose SHA-256 is verified before compilation.
 
-To build locally, open the project in Android Studio with the required Android SDK installed and run the Gradle `assembleDebug` task. GitHub Actions artifacts are available from the repository's **Actions** tab.
+To build locally, open the project in Android Studio with the required Android SDK installed and run the Gradle `assembleDebug` task.
 
-## Telegram setup
+## Telegram setup and required information
 
-The app requires Telegram API credentials (**API ID** and **API Hash**) from [my.telegram.org](https://my.telegram.org). Sign in with the Telegram account that will upload the media, then provide the destination channel username. The account must have permission to post in that channel.
+To use the app, prepare all of the following:
+
+1. **API ID and API Hash:** create/get these credentials at [my.telegram.org](https://my.telegram.org).
+2. **Phone number:** enter the mobile number of the Telegram account you want the app to use, including the international country calling code (for example, `+1...` or `+49...`).
+3. **Login verification code:** after submitting the phone number, Telegram sends a login code to an authorized Telegram session or through the delivery method Telegram provides. Enter that code in the app. If Telegram requests an additional two-step verification password, that will also be needed.
+4. **Destination channel address:** enter the username or address of the Telegram channel where the media should be posted (for example, `@your_channel` or its supported channel link). The Telegram account you sign in with must already be a member of that channel and have permission to post messages/media there (typically administrator posting permission).
+
+The app signs in as your **Telegram user account** through TDLib; this is not a bot-token login. Never share your login code or two-step verification password.
 
 Keep API credentials, verification codes, session data, and any private cookies out of source control. Use only accounts and destination channels you are authorized to access.
 
